@@ -1,25 +1,44 @@
-import javax.swing.*;
-import java.awt.*;
+import javax.swing.BorderFactory;
+import javax.swing.Box;
+import javax.swing.BoxLayout;
+import javax.swing.JButton;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JTextField;
+import javax.swing.JToggleButton;
+import javax.swing.SwingUtilities;
+import java.awt.CardLayout;
+import java.awt.Color;
+import java.awt.Component;
+import java.awt.Cursor;
+import java.awt.Dimension;
+import java.awt.Font;
+import java.awt.Graphics2D;
+import java.awt.GridBagLayout;
+import java.awt.GridLayout;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
 
-/**
- * Ventana principal y punto de entrada del programa (antes Main.java).
- * Contiene un CardLayout con dos pantallas: el menú (PanelMenu, clase
- * anidada aquí abajo) y el juego (PanelJuego).
- *
- * Ejecutar con:  java VentanaPrincipal
- */
 public class VentanaPrincipal extends JFrame {
 
-    public static void main(String[] args) {
-        SwingUtilities.invokeLater(() -> {
-            VentanaPrincipal ventana = new VentanaPrincipal();
-            ventana.setVisible(true);
+    private static final String PANTALLA_MENU = "menu";
+    private static final String PANTALLA_JUEGO = "juego";
+
+    private final CardLayout administradorDePantallas = new CardLayout();
+    private final JPanel contenedorDePantallas = new JPanel(administradorDePantallas);
+    private final PanelMenu panelMenu;
+    private PanelJuego juegoActual;
+
+    public static void main(String[] argumentos) {
+        SwingUtilities.invokeLater(new Runnable() {
+            public void run() {
+                VentanaPrincipal ventana = new VentanaPrincipal();
+                ventana.setVisible(true);
+            }
         });
     }
-
-    private final CardLayout cardLayout = new CardLayout();
-    private final JPanel contenedor = new JPanel(cardLayout);
-    private PanelBase juegoActual;
 
     public VentanaPrincipal() {
         super("Batalla Naval");
@@ -28,167 +47,196 @@ public class VentanaPrincipal extends JFrame {
         setMinimumSize(new Dimension(800, 600));
         setLocationRelativeTo(null);
 
-        // se cargan todos los .wav una sola vez, al abrir el programa
-        Sonido.precargar("click", "colocar", "radar", "splash",
-                "explosion", "explosion_grande", "victoria", "derrota");
+        Sonido.precargar(new String[]{"click", "colocar", "radar", "splash",
+                "explosion", "explosion_grande", "victoria", "derrota"});
 
-        mostrarMenu();
+        panelMenu = new PanelMenu(new Runnable() {
+            public void run() {
+                solicitarDatosYConectar();
+            }
+        });
+        contenedorDePantallas.add(panelMenu, PANTALLA_MENU);
+        administradorDePantallas.show(contenedorDePantallas, PANTALLA_MENU);
 
-        setContentPane(contenedor);
+        setContentPane(contenedorDePantallas);
     }
 
-    private void mostrarMenu() {
-        PanelMenu menu = new PanelMenu(this::mostrarJuego, this::mostrarJuegoRed);
-        contenedor.add(menu, "menu");
-        cardLayout.show(contenedor, "menu");
-    }
+    private void solicitarDatosYConectar() {
+        JTextField campoDireccion = new JTextField("localhost", 15);
+        JTextField campoPuerto = new JTextField("5000", 15);
+        JTextField campoNombre = new JTextField("Jugador", 15);
 
-    private void mostrarJuego() {
-        // se crea un PanelJuego nuevo cada vez, así cada partida empieza limpia;
-        // pero antes hay que detener y quitar el anterior para no dejar
-        // temporizadores (Timer) corriendo en segundo plano para siempre.
-        reemplazarJuegoActual(new PanelJuego(this::volverAlMenu));
-    }
+        JPanel panelDeDatos = new JPanel(new GridLayout(3, 2, 6, 6));
+        panelDeDatos.add(new JLabel("IP o nombre del servidor:"));
+        panelDeDatos.add(campoDireccion);
+        panelDeDatos.add(new JLabel("Puerto:"));
+        panelDeDatos.add(campoPuerto);
+        panelDeDatos.add(new JLabel("Tu nombre:"));
+        panelDeDatos.add(campoNombre);
 
-    /**
-     * Pide host/puerto/nombre, se conecta a Servidor.java en un hilo aparte
-     * (para no congelar la ventana mientras se espera la conexión) y, si
-     * todo sale bien, abre PanelJuegoRed. Servidor.java debe estar corriendo
-     * antes de pulsar "Jugar en red".
-     */
-    private void mostrarJuegoRed() {
-        String host = JOptionPane.showInputDialog(this, "IP o host del servidor:", "localhost");
-        if (host == null || host.isBlank()) return;
-
-        String puertoTexto = JOptionPane.showInputDialog(this, "Puerto del servidor:", "5000");
-        if (puertoTexto == null || puertoTexto.isBlank()) return;
-
-        String nombre = JOptionPane.showInputDialog(this, "Tu nombre de jugador:", "Jugador");
-        if (nombre == null || nombre.isBlank()) nombre = "Jugador";
-
-        int puerto;
-        try {
-            puerto = Integer.parseInt(puertoTexto.trim());
-        } catch (NumberFormatException e) {
-            JOptionPane.showMessageDialog(this, "El puerto debe ser un número.", "Puerto inválido", JOptionPane.ERROR_MESSAGE);
+        int opcionElegida = JOptionPane.showConfirmDialog(this, panelDeDatos, "Conectar con el servidor",
+                JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (opcionElegida != JOptionPane.OK_OPTION) {
             return;
         }
 
-        String hostFinal = host.trim();
-        String nombreFinal = nombre;
+        final String direccionServidor = campoDireccion.getText().trim();
+        String textoDelPuerto = campoPuerto.getText().trim();
+        String nombreEscrito = campoNombre.getText().trim();
 
-        new Thread(() -> {
-            try {
-                Cliente cliente = new Cliente(hostFinal, puerto);
-                cliente.enviarNombreYEsperarInicio(nombreFinal);
-                SwingUtilities.invokeLater(() -> reemplazarJuegoActual(new PanelJuegoRed(cliente, this::volverAlMenu)));
-            } catch (Exception e) {
-                SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(this,
-                        "No se pudo conectar al servidor en " + hostFinal + ":" + puerto + "\n"
-                                + "¿Está Servidor.java corriendo?\n\nDetalle: " + e.getMessage(),
-                        "Error de conexión", JOptionPane.ERROR_MESSAGE));
+        if (direccionServidor.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "Escribe la dirección del servidor.", "Dato faltante", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        int puertoLeido;
+        try {
+            puertoLeido = Integer.parseInt(textoDelPuerto);
+        } catch (NumberFormatException excepcion) {
+            JOptionPane.showMessageDialog(this, "El puerto debe ser un número.", "Puerto inválido", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+        if (puertoLeido < 1 || puertoLeido > 65535) {
+            JOptionPane.showMessageDialog(this, "El puerto debe estar entre 1 y 65535.", "Puerto inválido", JOptionPane.ERROR_MESSAGE);
+            return;
+        }
+
+        final int puertoServidor = puertoLeido;
+        final String nombreJugador;
+        if (nombreEscrito.isEmpty()) {
+            nombreJugador = "Jugador";
+        } else {
+            nombreJugador = nombreEscrito;
+        }
+
+        panelMenu.setBotonJugarHabilitado(false);
+
+        Thread hiloDeConexion = new Thread(new Runnable() {
+            public void run() {
+                Cliente clienteConectado = null;
+                try {
+                    clienteConectado = new Cliente(direccionServidor, puertoServidor);
+                    clienteConectado.enviarNombreYEsperarInicio(nombreJugador);
+                    final Cliente clienteListo = clienteConectado;
+                    SwingUtilities.invokeLater(new Runnable() {
+                        public void run() {
+                            mostrarJuego(clienteListo);
+                        }
+                    });
+                } catch (Exception excepcion) {
+                    if (clienteConectado != null) {
+                        clienteConectado.cerrar();
+                    }
+                    final String detalleDelError = excepcion.getMessage();
+                    SwingUtilities.invokeLater(new Runnable() {
+                        public void run() {
+                            panelMenu.setBotonJugarHabilitado(true);
+                            JOptionPane.showMessageDialog(VentanaPrincipal.this,
+                                    "No se pudo iniciar la partida en " + direccionServidor + ":" + puertoServidor + "\n"
+                                            + "Verifica que Servidor.java esté ejecutándose.\n\nDetalle: " + detalleDelError,
+                                    "Error de conexión", JOptionPane.ERROR_MESSAGE);
+                        }
+                    });
+                }
             }
-        }, "hilo-conexion").start();
+        });
+        hiloDeConexion.start();
     }
 
-    private void reemplazarJuegoActual(PanelBase nuevo) {
+    private void mostrarJuego(Cliente cliente) {
         if (juegoActual != null) {
             juegoActual.detener();
-            contenedor.remove(juegoActual);
+            contenedorDePantallas.remove(juegoActual);
         }
-        juegoActual = nuevo;
-        contenedor.add(juegoActual, "juego");
-        cardLayout.show(contenedor, "juego");
+        juegoActual = new PanelJuego(cliente, new Runnable() {
+            public void run() {
+                volverAlMenu();
+            }
+        });
+        contenedorDePantallas.add(juegoActual, PANTALLA_JUEGO);
+        administradorDePantallas.show(contenedorDePantallas, PANTALLA_JUEGO);
     }
 
     private void volverAlMenu() {
-        cardLayout.show(contenedor, "menu");
+        panelMenu.setBotonJugarHabilitado(true);
+        administradorDePantallas.show(contenedorDePantallas, PANTALLA_MENU);
     }
 
-    // ======================================================================
-    //  Pantalla de inicio (antes PanelMenu.java)
-    // ======================================================================
     private static class PanelMenu extends PanelBase {
 
-        PanelMenu(Runnable alJugar, Runnable alJugarRed) {
+        private final JButton botonJugar;
+
+        PanelMenu(final Runnable accionJugar) {
             setLayout(new GridBagLayout());
 
-            JPanel caja = new JPanel();
-            caja.setOpaque(false);
-            caja.setLayout(new BoxLayout(caja, BoxLayout.Y_AXIS));
+            JPanel cajaCentral = new JPanel();
+            cajaCentral.setOpaque(false);
+            cajaCentral.setLayout(new BoxLayout(cajaCentral, BoxLayout.Y_AXIS));
 
-            JLabel titulo = new JLabel("BATALLA NAVAL");
-            titulo.setFont(new Font("SansSerif", Font.BOLD, 44));
-            titulo.setForeground(Color.WHITE);
-            titulo.setAlignmentX(Component.CENTER_ALIGNMENT);
+            JLabel etiquetaDeTitulo = new JLabel("BATALLA NAVAL");
+            etiquetaDeTitulo.setFont(new Font("SansSerif", Font.BOLD, 44));
+            etiquetaDeTitulo.setForeground(Color.WHITE);
+            etiquetaDeTitulo.setAlignmentX(Component.CENTER_ALIGNMENT);
 
-            JLabel subtitulo = new JLabel("Jugador vs Computadora o por red");
-            subtitulo.setFont(new Font("SansSerif", Font.PLAIN, 16));
-            subtitulo.setForeground(new Color(220, 235, 245));
-            subtitulo.setAlignmentX(Component.CENTER_ALIGNMENT);
+            JLabel etiquetaDeSubtitulo = new JLabel("Jugador vs PC (cliente-servidor)");
+            etiquetaDeSubtitulo.setFont(new Font("SansSerif", Font.PLAIN, 16));
+            etiquetaDeSubtitulo.setForeground(new Color(220, 235, 245));
+            etiquetaDeSubtitulo.setAlignmentX(Component.CENTER_ALIGNMENT);
 
-            JButton botonJugar = crearBoton("Jugar contra la PC (local)", new Color(20, 130, 90));
-            botonJugar.addActionListener(e -> {
-                Sonido.reproducir("click");
-                alJugar.run();
+            botonJugar = new JButton("Jugar");
+            botonJugar.setFont(new Font("SansSerif", Font.BOLD, 20));
+            botonJugar.setForeground(Color.WHITE);
+            botonJugar.setBackground(new Color(20, 130, 90));
+            botonJugar.setFocusPainted(false);
+            botonJugar.setBorder(BorderFactory.createEmptyBorder(14, 34, 14, 34));
+            botonJugar.setAlignmentX(Component.CENTER_ALIGNMENT);
+            botonJugar.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            botonJugar.addActionListener(new ActionListener() {
+                public void actionPerformed(ActionEvent evento) {
+                    Sonido.reproducir("click");
+                    accionJugar.run();
+                }
             });
 
-            JButton botonJugarRed = crearBoton("Jugar en red (Servidor.java)", new Color(30, 95, 150));
-            botonJugarRed.addActionListener(e -> {
-                Sonido.reproducir("click");
-                alJugarRed.run();
-            });
-
-            JToggleButton botonSonido = new JToggleButton("\uD83D\uDD0A Sonido: activado");
+            final JToggleButton botonSonido = new JToggleButton("Sonido: activado");
             botonSonido.setSelected(true);
-            estilizarSecundario(botonSonido);
-            botonSonido.addActionListener(e -> {
-                boolean activo = botonSonido.isSelected();
-                Sonido.setActivado(activo);
-                botonSonido.setText(activo ? "\uD83D\uDD0A Sonido: activado" : "\uD83D\uDD07 Sonido: silenciado");
+            botonSonido.setFont(new Font("SansSerif", Font.PLAIN, 15));
+            botonSonido.setForeground(Color.WHITE);
+            botonSonido.setBackground(new Color(255, 255, 255, 40));
+            botonSonido.setFocusPainted(false);
+            botonSonido.setBorder(BorderFactory.createEmptyBorder(8, 20, 8, 20));
+            botonSonido.setAlignmentX(Component.CENTER_ALIGNMENT);
+            botonSonido.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            botonSonido.setContentAreaFilled(true);
+            botonSonido.setOpaque(true);
+            botonSonido.addActionListener(new ActionListener() {
+                public void actionPerformed(ActionEvent evento) {
+                    boolean sonidoActivo = botonSonido.isSelected();
+                    Sonido.setSonidoActivado(sonidoActivo);
+                    if (sonidoActivo) {
+                        botonSonido.setText("Sonido: activado");
+                    } else {
+                        botonSonido.setText("Sonido: silenciado");
+                    }
+                }
             });
 
-            caja.add(titulo);
-            caja.add(Box.createVerticalStrut(4));
-            caja.add(subtitulo);
-            caja.add(Box.createVerticalStrut(50));
-            caja.add(botonJugar);
-            caja.add(Box.createVerticalStrut(12));
-            caja.add(botonJugarRed);
-            caja.add(Box.createVerticalStrut(16));
-            caja.add(botonSonido);
+            cajaCentral.add(etiquetaDeTitulo);
+            cajaCentral.add(Box.createVerticalStrut(4));
+            cajaCentral.add(etiquetaDeSubtitulo);
+            cajaCentral.add(Box.createVerticalStrut(50));
+            cajaCentral.add(botonJugar);
+            cajaCentral.add(Box.createVerticalStrut(16));
+            cajaCentral.add(botonSonido);
 
-            add(caja);
+            add(cajaCentral);
         }
 
-        private JButton crearBoton(String texto, Color color) {
-            JButton boton = new JButton(texto);
-            boton.setFont(new Font("SansSerif", Font.BOLD, 20));
-            boton.setForeground(Color.WHITE);
-            boton.setBackground(color);
-            boton.setFocusPainted(false);
-            boton.setBorder(BorderFactory.createEmptyBorder(14, 34, 14, 34));
-            boton.setAlignmentX(Component.CENTER_ALIGNMENT);
-            boton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            return boton;
+        void setBotonJugarHabilitado(boolean habilitado) {
+            botonJugar.setEnabled(habilitado);
         }
 
-        private void estilizarSecundario(JToggleButton boton) {
-            boton.setFont(new Font("SansSerif", Font.PLAIN, 15));
-            boton.setForeground(Color.WHITE);
-            boton.setBackground(new Color(255, 255, 255, 40));
-            boton.setFocusPainted(false);
-            boton.setBorder(BorderFactory.createEmptyBorder(8, 20, 8, 20));
-            boton.setAlignmentX(Component.CENTER_ALIGNMENT);
-            boton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            boton.setContentAreaFilled(true);
-            boton.setOpaque(true);
-        }
-
-        @Override
-        protected void dibujarContenido(Graphics2D g2) {
-            // el fondo de agua ya lo dibuja PanelBase; aquí no se necesita nada extra,
-            // los botones son componentes Swing normales agregados con add(...)
+        protected void dibujarContenido(Graphics2D graficos) {
         }
     }
 }

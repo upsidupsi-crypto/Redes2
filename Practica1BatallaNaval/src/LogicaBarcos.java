@@ -1,268 +1,281 @@
 import java.util.ArrayList;
-
 import java.util.Arrays;
-
 import java.util.List;
-
 import java.util.Random;
-
-
-
-/**
-
- Lógica completa de UN jugador: sus dos tableros, sus barcos, la
- colocación y la recepción de disparos. No usa Swing.
- La clase Barco vive aquí adentro porque solo tiene sentido junto a esta.
- */
 
 public class LogicaBarcos {
 
-    public static final int TAM = 10;
-    public static final char AGUA = '~';
-    public static final char BARCO = 'B';
-    public static final char TOCADO = 'X';
-    public static final char FALLO = 'O';
-    public static final char HUNDIDO = '#';
-// ======================================================================
-// Barco (clase anidada). Desde fuera se usa como LogicaBarcos.Barco
-// =====================================================================
+    public static final int TAMANO_TABLERO = 10;
+    public static final int DISPAROS_POR_TURNO = 3;
+
+    public static final char CASILLA_AGUA = '~';
+    public static final char CASILLA_BARCO = 'B';
+    public static final char CASILLA_TOCADA = 'X';
+    public static final char CASILLA_FALLO = 'O';
+    public static final char CASILLA_HUNDIDA = '#';
+
+    public static final String RESULTADO_AGUA = "AGUA";
+    public static final String RESULTADO_TOCADO = "TOCADO";
+    public static final String RESULTADO_HUNDIDO = "HUNDIDO";
+    public static final String RESULTADO_REPETIDO = "REPETIDO";
+    public static final String RESULTADO_INVALIDO = "INVALIDO";
+
+    public static final String[] NOMBRES_BARCOS = {"Submarino", "Acorazado", "Crucero", "Crucero", "Destructor", "Destructor", "Destructor"};
+    public static final int[] LONGITUDES_BARCOS = {5, 4, 3, 3, 2, 2, 2};
 
     public static class Barco {
 
-        private final String tipo;
+        private final String nombre;
         private final int longitud;
-        private final List<int[]> posiciones;
-        private final boolean[] golpes;
+        private final boolean horizontal;
+        private final int filaInicial;
+        private final int columnaInicial;
+        private final boolean[] casillasImpactadas;
 
-        public Barco(String tipo, int longitud) {
-            this.tipo = tipo;
+        public Barco(String nombre, int longitud, int filaInicial, int columnaInicial, boolean horizontal) {
+            this.nombre = nombre;
             this.longitud = longitud;
-            this.posiciones = new ArrayList<>();
-            this.golpes = new boolean[longitud];
+            this.filaInicial = filaInicial;
+            this.columnaInicial = columnaInicial;
+            this.horizontal = horizontal;
+            this.casillasImpactadas = new boolean[longitud];
         }
 
-
-
-        public void fijarPosiciones(int filaInicio, int colInicio, boolean horizontal) {
-
-            posiciones.clear();
-            for (int i = 0; i < longitud; i++) {
-                int fila = horizontal ? filaInicio : filaInicio + i;
-                int col = horizontal ? colInicio + i : colInicio;
-                posiciones.add(new int[]{fila, col});
+        public int getFilaDeCasilla(int indiceCasilla) {
+            if (horizontal) {
+                return filaInicial;
             }
+            return filaInicial + indiceCasilla;
         }
 
-        public boolean ocupaCasilla(int fila, int col) {
-
-            for (int[] pos : posiciones) {
-                if (pos[0] == fila && pos[1] == col) return true;
+        public int getColumnaDeCasilla(int indiceCasilla) {
+            if (horizontal) {
+                return columnaInicial + indiceCasilla;
             }
-
-            return false;
+            return columnaInicial;
         }
 
-        public boolean recibirDisparo(int fila, int col) {
-
-            for (int i = 0; i < posiciones.size(); i++) {
-                int[] pos = posiciones.get(i);
-                if (pos[0] == fila && pos[1] == col) {
-                    golpes[i] = true;
+        public boolean ocupaCasilla(int fila, int columna) {
+            for (int indiceCasilla = 0; indiceCasilla < longitud; indiceCasilla++) {
+                if (getFilaDeCasilla(indiceCasilla) == fila && getColumnaDeCasilla(indiceCasilla) == columna) {
                     return true;
                 }
             }
-
             return false;
         }
 
-        public boolean estaHundido() {
-
-            for (boolean g : golpes) {
-                if (!g) return false;
+        public void registrarImpacto(int fila, int columna) {
+            for (int indiceCasilla = 0; indiceCasilla < longitud; indiceCasilla++) {
+                if (getFilaDeCasilla(indiceCasilla) == fila && getColumnaDeCasilla(indiceCasilla) == columna) {
+                    casillasImpactadas[indiceCasilla] = true;
+                }
             }
+        }
 
+        public boolean estaHundido() {
+            for (boolean casillaImpactada : casillasImpactadas) {
+                if (!casillaImpactada) {
+                    return false;
+                }
+            }
             return true;
         }
 
-        public String getTipo() { return tipo; }
-        public int getLongitud() { return longitud; }
-        public List<int[]> getPosiciones() { return posiciones; }
-    }
+        public String getNombre() {
+            return nombre;
+        }
 
-// ======================================================================
-// Lógica del jugador
-// ======================================================================
+        public int getLongitud() {
+            return longitud;
+        }
+
+        public boolean isHorizontal() {
+            return horizontal;
+        }
+
+        public int getFilaInicial() {
+            return filaInicial;
+        }
+
+        public int getColumnaInicial() {
+            return columnaInicial;
+        }
+    }
 
     private final char[][] tableroPropio;
-    private final char[][] tableroTiro;
-    private final List<Barco> misBarcos;
+    private final char[][] tableroDeTiro;
+    private final List<Barco> barcosPropios;
+    private final List<Barco> barcosEnemigosHundidos;
+    private final Random generadorAleatorio;
+    private Barco barcoHundidoEnUltimoDisparo;
 
     public LogicaBarcos() {
-
-        tableroPropio = new char[TAM][TAM];
-        tableroTiro = new char[TAM][TAM];
-        for (char[] fila : tableroPropio) Arrays.fill(fila, AGUA);
-        for (char[] fila : tableroTiro) Arrays.fill(fila, AGUA);
-        misBarcos = new ArrayList<>();
+        tableroPropio = new char[TAMANO_TABLERO][TAMANO_TABLERO];
+        tableroDeTiro = new char[TAMANO_TABLERO][TAMANO_TABLERO];
+        for (int fila = 0; fila < TAMANO_TABLERO; fila++) {
+            Arrays.fill(tableroPropio[fila], CASILLA_AGUA);
+            Arrays.fill(tableroDeTiro[fila], CASILLA_AGUA);
+        }
+        barcosPropios = new ArrayList<Barco>();
+        barcosEnemigosHundidos = new ArrayList<Barco>();
+        generadorAleatorio = new Random();
+        barcoHundidoEnUltimoDisparo = null;
     }
 
-    public boolean colocarBarco(String tipo, int longitud, int fila, int col, boolean horizontal) {
+    public static boolean esCasillaValida(int fila, int columna) {
+        return fila >= 0 && fila < TAMANO_TABLERO && columna >= 0 && columna < TAMANO_TABLERO;
+    }
 
-        Barco candidato = new Barco(tipo, longitud);
-        candidato.fijarPosiciones(fila, col, horizontal);
+    public static String nombreDeCasilla(int fila, int columna) {
+        return "" + (char) ('A' + fila) + (columna + 1);
+    }
 
-        for (int[] pos : candidato.getPosiciones()) {
-            int f = pos[0], c = pos[1];
-            if (f < 0 || f >= TAM || c < 0 || c >= TAM) return false;
-            if (tableroPropio[f][c] != AGUA) return false;
-            if (!zonaLibreDeVecinos(f, c)) return false; // barcos no pueden tocarse
+    public boolean colocarBarco(String nombre, int longitud, int filaInicial, int columnaInicial, boolean horizontal) {
+        Barco barcoNuevo = new Barco(nombre, longitud, filaInicial, columnaInicial, horizontal);
+
+        for (int indiceCasilla = 0; indiceCasilla < longitud; indiceCasilla++) {
+            int fila = barcoNuevo.getFilaDeCasilla(indiceCasilla);
+            int columna = barcoNuevo.getColumnaDeCasilla(indiceCasilla);
+            if (!esCasillaValida(fila, columna)) {
+                return false;
+            }
+            if (tableroPropio[fila][columna] != CASILLA_AGUA) {
+                return false;
+            }
         }
 
-        for (int[] pos : candidato.getPosiciones()) {
-            tableroPropio[pos[0]][pos[1]] = BARCO;
+        for (int indiceCasilla = 0; indiceCasilla < longitud; indiceCasilla++) {
+            int fila = barcoNuevo.getFilaDeCasilla(indiceCasilla);
+            int columna = barcoNuevo.getColumnaDeCasilla(indiceCasilla);
+            tableroPropio[fila][columna] = CASILLA_BARCO;
         }
 
-        misBarcos.add(candidato);
+        barcosPropios.add(barcoNuevo);
         return true;
     }
-// Revisa las 8 casillas alrededor (y la propia) de una posición candidata
 
-    private boolean zonaLibreDeVecinos(int fila, int col) {
-
-        for (int df = -1; df <= 1; df++) {
-            for (int dc = -1; dc <= 1; dc++) {
-                int f = fila + df;
-                int c = col + dc;
-                if (f < 0 || f >= TAM || c < 0 || c >= TAM) continue;
-                if (tableroPropio[f][c] == BARCO) return false;
+    public void colocarFlotaAleatoria() {
+        for (int indiceBarco = 0; indiceBarco < LONGITUDES_BARCOS.length; indiceBarco++) {
+            boolean barcoColocado = false;
+            while (!barcoColocado) {
+                int filaInicial = generadorAleatorio.nextInt(TAMANO_TABLERO);
+                int columnaInicial = generadorAleatorio.nextInt(TAMANO_TABLERO);
+                boolean horizontal = generadorAleatorio.nextBoolean();
+                barcoColocado = colocarBarco(NOMBRES_BARCOS[indiceBarco], LONGITUDES_BARCOS[indiceBarco], filaInicial, columnaInicial, horizontal);
             }
         }
+    }
 
+    public String recibirDisparo(int fila, int columna) {
+        barcoHundidoEnUltimoDisparo = null;
+
+        if (!esCasillaValida(fila, columna)) {
+            return RESULTADO_INVALIDO;
+        }
+
+        char estadoCasilla = tableroPropio[fila][columna];
+
+        if (estadoCasilla == CASILLA_TOCADA || estadoCasilla == CASILLA_FALLO || estadoCasilla == CASILLA_HUNDIDA) {
+            return RESULTADO_REPETIDO;
+        }
+
+        if (estadoCasilla == CASILLA_AGUA) {
+            tableroPropio[fila][columna] = CASILLA_FALLO;
+            return RESULTADO_AGUA;
+        }
+
+        Barco barcoImpactado = buscarBarcoEnCasilla(fila, columna);
+        barcoImpactado.registrarImpacto(fila, columna);
+
+        if (barcoImpactado.estaHundido()) {
+            marcarBarcoComoHundido(tableroPropio, barcoImpactado);
+            barcoHundidoEnUltimoDisparo = barcoImpactado;
+            return RESULTADO_HUNDIDO;
+        }
+
+        tableroPropio[fila][columna] = CASILLA_TOCADA;
+        return RESULTADO_TOCADO;
+    }
+
+    public void registrarResultadoDisparo(int fila, int columna, String resultado) {
+        if (!esCasillaValida(fila, columna)) {
+            return;
+        }
+        if (RESULTADO_AGUA.equals(resultado)) {
+            tableroDeTiro[fila][columna] = CASILLA_FALLO;
+        } else if (RESULTADO_TOCADO.equals(resultado) || RESULTADO_HUNDIDO.equals(resultado)) {
+            tableroDeTiro[fila][columna] = CASILLA_TOCADA;
+        }
+    }
+
+    public void registrarBarcoEnemigoHundido(Barco barcoEnemigo) {
+        marcarBarcoComoHundido(tableroDeTiro, barcoEnemigo);
+        barcosEnemigosHundidos.add(barcoEnemigo);
+    }
+
+    public boolean todosLosBarcosHundidos() {
+        for (Barco barco : barcosPropios) {
+            if (!barco.estaHundido()) {
+                return false;
+            }
+        }
         return true;
     }
 
-    public void colocarBarcosAleatorio() {
+    public Barco getBarcoHundidoEnUltimoDisparo() {
+        return barcoHundidoEnUltimoDisparo;
+    }
 
-        Random rnd = new Random();
-        int[] longitudes = {5, 4, 3, 3, 2, 2, 2};
-        String[] tipos = {"Submarino", "Acorazado", "Crucero", "Crucero", "Destructor", "Destructor", "Destructor"};
+    public char[][] getTableroPropio() {
+        return tableroPropio;
+    }
 
-        for (int i = 0; i < longitudes.length; i++) {
-            boolean colocado = false;
-            while (!colocado) {
-                int fila = rnd.nextInt(TAM);
-                int col = rnd.nextInt(TAM);
-                boolean horizontal = rnd.nextBoolean();
-                colocado = colocarBarco(tipos[i], longitudes[i], fila, col, horizontal);
+    public char[][] getTableroDeTiro() {
+        return tableroDeTiro;
+    }
+
+    public List<Barco> getBarcosPropios() {
+        return barcosPropios;
+    }
+
+    public char[][] copiarTableroPropio() {
+        return copiarTablero(tableroPropio);
+    }
+
+    public char[][] copiarTableroDeTiro() {
+        return copiarTablero(tableroDeTiro);
+    }
+
+    public List<Barco> copiarBarcosEnemigosHundidos() {
+        return new ArrayList<Barco>(barcosEnemigosHundidos);
+    }
+
+    private Barco buscarBarcoEnCasilla(int fila, int columna) {
+        for (Barco barco : barcosPropios) {
+            if (barco.ocupaCasilla(fila, columna)) {
+                return barco;
             }
         }
-
-    }
-
-// Llamar del lado que RECIBE el disparo, sobre su tableroPropio
-// Retorna "REPETIDO" si esa casilla ya había sido disparada antes
-    public String recibirDisparo(int fila, int col) {
-
-        char estadoActual = tableroPropio[fila][col];
-
-        if (estadoActual == TOCADO || estadoActual == FALLO || estadoActual == HUNDIDO) {
-
-            return "REPETIDO";
-
-        }
-
-
-
-        Barco impactado = buscarBarcoEn(fila, col);
-
-
-
-        if (impactado == null) {
-
-            tableroPropio[fila][col] = FALLO;
-
-            return "AGUA";
-
-        }
-
-
-
-        impactado.recibirDisparo(fila, col);
-
-        if (impactado.estaHundido()) {
-
-            for (int[] pos : impactado.getPosiciones()) {
-
-                tableroPropio[pos[0]][pos[1]] = HUNDIDO;
-
-            }
-
-            return "HUNDIDO";
-
-        } else {
-
-            tableroPropio[fila][col] = TOCADO;
-
-            return "TOCADO";
-
-        }
-
-    }
-
-
-
-// Llamar del lado que DISPARÓ, para pintar su tableroTiro con la respuesta
-
-    public void registrarResultadoTiro(int fila, int col, String resultado) {
-
-        switch (resultado) {
-
-            case "AGUA": tableroTiro[fila][col] = FALLO; break;
-
-            case "TOCADO": tableroTiro[fila][col] = TOCADO; break;
-
-            case "HUNDIDO": tableroTiro[fila][col] = HUNDIDO; break;
-
-// "REPETIDO" no modifica el tablero de tiro
-
-        }
-
-    }
-
-
-
-    private Barco buscarBarcoEn(int fila, int col) {
-
-        for (Barco b : misBarcos) {
-
-            if (b.ocupaCasilla(fila, col)) return b;
-
-        }
-
         return null;
-
     }
 
-
-
-    public boolean todosHundidos() {
-
-        for (Barco b : misBarcos) {
-
-            if (!b.estaHundido()) return false;
-
+    private static void marcarBarcoComoHundido(char[][] tablero, Barco barco) {
+        for (int indiceCasilla = 0; indiceCasilla < barco.getLongitud(); indiceCasilla++) {
+            int fila = barco.getFilaDeCasilla(indiceCasilla);
+            int columna = barco.getColumnaDeCasilla(indiceCasilla);
+            if (esCasillaValida(fila, columna)) {
+                tablero[fila][columna] = CASILLA_HUNDIDA;
+            }
         }
-
-        return true;
-
     }
 
-
-
-    public char[][] getTableroPropio() { return tableroPropio; }
-
-    public char[][] getTableroTiro() { return tableroTiro; }
-
-    public List<Barco> getMisBarcos() { return misBarcos; }
-
+    private static char[][] copiarTablero(char[][] tableroOriginal) {
+        char[][] tableroCopia = new char[TAMANO_TABLERO][TAMANO_TABLERO];
+        for (int fila = 0; fila < TAMANO_TABLERO; fila++) {
+            for (int columna = 0; columna < TAMANO_TABLERO; columna++) {
+                tableroCopia[fila][columna] = tableroOriginal[fila][columna];
+            }
+        }
+        return tableroCopia;
+    }
 }

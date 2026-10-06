@@ -1,376 +1,579 @@
-import javax.swing.*;
-import java.awt.*;
+import javax.swing.BorderFactory;
+import javax.swing.Box;
+import javax.swing.BoxLayout;
+import javax.swing.JButton;
+import javax.swing.JComponent;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
+import java.awt.BorderLayout;
+import java.awt.CardLayout;
+import java.awt.Color;
+import java.awt.Component;
+import java.awt.Font;
+import java.awt.Graphics2D;
+import java.awt.GridLayout;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Random;
+import java.util.concurrent.Semaphore;
 
-/**
- * "Director" del juego: conecta la lógica (LogicaBarcos) con la vista
- * (PanelTablero). Maneja las tres fases: colocación, batalla y fin.
- */
 public class PanelJuego extends PanelBase {
 
-    private static final Color RADAR_JUGADOR = new Color(60, 230, 110);
-    private static final Color RADAR_PC = new Color(230, 70, 70);
+    private static final Color COLOR_RADAR_JUGADOR = new Color(60, 230, 110);
+    private static final Color COLOR_RADAR_SERVIDOR = new Color(230, 70, 70);
 
-    private enum Fase { COLOCACION, BATALLA, TERMINADO }
+    private static final int FASE_COLOCACION = 0;
+    private static final int FASE_BATALLA = 1;
+    private static final int FASE_TERMINADA = 2;
 
-    private final Runnable alVolverMenu;
-    private final Random random = new Random();
+    private static final int PAUSA_ANTES_DEL_MENSAJE_FINAL_MILISEGUNDOS = 1400;
 
-    private LogicaBarcos jugador = new LogicaBarcos();
-    private final LogicaBarcos pc = new LogicaBarcos();
+    private static final String PANTALLA_COLOCACION = "colocacion";
+    private static final String PANTALLA_BATALLA = "batalla";
 
-    // Un tablero SOLO para colocar, y otro para "Tu flota" durante la batalla.
-    // (Un componente Swing solo puede tener un padre: antes se reutilizaba el
-    // mismo panel en las dos vistas y el tablero desaparecía de la colocación.)
-    private final PanelTablero panelColocacion = new PanelTablero();
-    private final PanelTablero panelPropio = new PanelTablero();
-    private final PanelTablero panelEnemigo = new PanelTablero();
+    private final Cliente cliente;
+    private final Runnable accionVolverAlMenu;
+    private LogicaBarcos logicaJugador;
 
-    private final JLabel etiquetaEstado = new JLabel("Coloca tus barcos", SwingConstants.CENTER);
-    private final JLabel etiquetaColocacion = new JLabel("", SwingConstants.CENTER);
-    private final JButton botonComenzar = new JButton("Comenzar batalla");
+    private final PanelTablero panelDeColocacion = new PanelTablero();
+    private final PanelTablero panelDeFlotaPropia = new PanelTablero();
+    private final PanelTablero panelDeTableroEnemigo = new PanelTablero();
 
-    private final CardLayout cardLayout = new CardLayout();
-    private final JPanel panelCentral = new JPanel(cardLayout);
+    private final JLabel etiquetaDeEstado = new JLabel("Coloca tus barcos", SwingConstants.CENTER);
+    private final JLabel etiquetaDeColocacion = new JLabel("", SwingConstants.CENTER);
+    private final JButton botonComenzarBatalla = new JButton("Comenzar batalla");
 
-    private final String[] tipos = {"Submarino", "Acorazado", "Crucero", "Crucero", "Destructor", "Destructor", "Destructor"};
-    private final int[] longitudes = {5, 4, 3, 3, 2, 2, 2};
-    private int indicePendiente = 0;
-    private boolean orientacionHorizontal = true;
+    private final CardLayout administradorDePantallas = new CardLayout();
+    private final JPanel panelCentral = new JPanel(administradorDePantallas);
 
-    private Fase faseActual = Fase.COLOCACION;
-    private boolean turnoJugador;
-    private int disparosTurno = 0;
+    private int indiceBarcoPendiente;
+    private boolean orientacionHorizontal;
 
-    // true cuando la partida se abandona o termina; los Timer pendientes
-    // ya no deben hacer nada (antes podían disparar sonidos o mostrar el
-    // diálogo de fin después de volver al menú).
-    private boolean detenido = false;
+    private volatile int faseActual;
+    private volatile boolean partidaDetenida;
+    private volatile int filaSeleccionada;
+    private volatile int columnaSeleccionada;
 
-    public PanelJuego(Runnable alVolverMenu) {
-        this.alVolverMenu = alVolverMenu;
+    private final Semaphore semaforoDeClic = new Semaphore(0);
+    private final Semaphore semaforoDeAnimacion = new Semaphore(0);
+    private Thread hiloDeRed;
+
+    public PanelJuego(Cliente cliente, Runnable accionVolverAlMenu) {
+        this.cliente = cliente;
+        this.accionVolverAlMenu = accionVolverAlMenu;
+        this.logicaJugador = new LogicaBarcos();
+        this.indiceBarcoPendiente = 0;
+        this.orientacionHorizontal = true;
+        this.faseActual = FASE_COLOCACION;
+        this.partidaDetenida = false;
+
         setLayout(new BorderLayout());
 
         add(construirBarraSuperior(), BorderLayout.NORTH);
 
         panelCentral.setOpaque(false);
-        panelCentral.add(construirVistaColocacion(), "colocacion");
-        panelCentral.add(construirVistaBatalla(), "batalla");
+        panelCentral.add(construirVistaDeColocacion(), PANTALLA_COLOCACION);
+        panelCentral.add(construirVistaDeBatalla(), PANTALLA_BATALLA);
         add(panelCentral, BorderLayout.CENTER);
 
-        panelColocacion.setOyente((fila, col) -> intentarColocar(fila, col));
-        panelEnemigo.setOyente((fila, col) -> intentarDisparoJugador(fila, col));
-        panelColocacion.setInteractivo(true);
-        panelPropio.setInteractivo(false);
-        panelEnemigo.setInteractivo(false);
+        panelDeColocacion.setOyenteDeCasilla(new PanelTablero.OyenteDeCasilla() {
+            public void alSeleccionarCasilla(int fila, int columna) {
+                alSeleccionarCasillaDeColocacion(fila, columna);
+            }
+        });
+        panelDeTableroEnemigo.setOyenteDeCasilla(new PanelTablero.OyenteDeCasilla() {
+            public void alSeleccionarCasilla(int fila, int columna) {
+                alSeleccionarCasillaEnemiga(fila, columna);
+            }
+        });
+        panelDeColocacion.setInteractivo(true);
+        panelDeFlotaPropia.setInteractivo(false);
+        panelDeTableroEnemigo.setInteractivo(false);
 
-        actualizarEtiquetaColocacion();
-        actualizarVistas();
+        actualizarTextoDeColocacion();
+        actualizarTablerosDeColocacion();
     }
 
-    // ---------- Construcción de la interfaz ----------
-
     private JPanel construirBarraSuperior() {
-        JPanel barra = new JPanel(new BorderLayout());
-        barra.setOpaque(false);
-        barra.setBorder(BorderFactory.createEmptyBorder(10, 16, 10, 16));
+        JPanel barraSuperior = new JPanel(new BorderLayout());
+        barraSuperior.setOpaque(false);
+        barraSuperior.setBorder(BorderFactory.createEmptyBorder(10, 16, 10, 16));
 
-        etiquetaEstado.setFont(new Font("SansSerif", Font.BOLD, 20));
-        etiquetaEstado.setForeground(Color.WHITE);
+        etiquetaDeEstado.setFont(new Font("SansSerif", Font.BOLD, 20));
+        etiquetaDeEstado.setForeground(Color.WHITE);
 
         JButton botonMenu = new JButton("\u2190 Menú");
         botonMenu.setFocusPainted(false);
-        botonMenu.addActionListener(e -> {
-            detener();
-            alVolverMenu.run();
+        botonMenu.addActionListener(new ActionListener() {
+            public void actionPerformed(ActionEvent evento) {
+                detener();
+                accionVolverAlMenu.run();
+            }
         });
 
-        barra.add(botonMenu, BorderLayout.WEST);
-        barra.add(etiquetaEstado, BorderLayout.CENTER);
-        return barra;
+        barraSuperior.add(botonMenu, BorderLayout.WEST);
+        barraSuperior.add(etiquetaDeEstado, BorderLayout.CENTER);
+        return barraSuperior;
     }
 
-    private JPanel construirVistaColocacion() {
-        JPanel vista = new JPanel(new BorderLayout());
-        vista.setOpaque(false);
-        vista.add(panelColocacion, BorderLayout.CENTER);
+    private JPanel construirVistaDeColocacion() {
+        JPanel vistaDeColocacion = new JPanel(new BorderLayout());
+        vistaDeColocacion.setOpaque(false);
+        vistaDeColocacion.add(panelDeColocacion, BorderLayout.CENTER);
 
-        JPanel controles = new JPanel();
-        controles.setOpaque(false);
-        controles.setLayout(new BoxLayout(controles, BoxLayout.Y_AXIS));
+        JPanel panelDeControles = new JPanel();
+        panelDeControles.setOpaque(false);
+        panelDeControles.setLayout(new BoxLayout(panelDeControles, BoxLayout.Y_AXIS));
 
-        etiquetaColocacion.setForeground(Color.WHITE);
-        etiquetaColocacion.setFont(new Font("SansSerif", Font.PLAIN, 15));
-        etiquetaColocacion.setAlignmentX(Component.CENTER_ALIGNMENT);
+        etiquetaDeColocacion.setForeground(Color.WHITE);
+        etiquetaDeColocacion.setFont(new Font("SansSerif", Font.PLAIN, 15));
+        etiquetaDeColocacion.setAlignmentX(Component.CENTER_ALIGNMENT);
 
-        JPanel fila = new JPanel();
-        fila.setOpaque(false);
+        JPanel filaDeBotones = new JPanel();
+        filaDeBotones.setOpaque(false);
 
         JButton botonGirar = new JButton("Girar orientación");
-        botonGirar.addActionListener(e -> {
-            orientacionHorizontal = !orientacionHorizontal;
-            actualizarEtiquetaColocacion();
+        botonGirar.addActionListener(new ActionListener() {
+            public void actionPerformed(ActionEvent evento) {
+                orientacionHorizontal = !orientacionHorizontal;
+                actualizarTextoDeColocacion();
+            }
         });
 
-        JButton botonAleatorio = new JButton("Colocación aleatoria");
-        botonAleatorio.addActionListener(e -> {
-            jugador = new LogicaBarcos();
-            jugador.colocarBarcosAleatorio();
-            indicePendiente = tipos.length;
-            Sonido.reproducir("colocar");
-            actualizarVistas();
-            actualizarEtiquetaColocacion();
-            botonComenzar.setEnabled(true);
+        JButton botonColocacionAleatoria = new JButton("Colocación aleatoria");
+        botonColocacionAleatoria.addActionListener(new ActionListener() {
+            public void actionPerformed(ActionEvent evento) {
+                logicaJugador = new LogicaBarcos();
+                logicaJugador.colocarFlotaAleatoria();
+                indiceBarcoPendiente = LogicaBarcos.LONGITUDES_BARCOS.length;
+                Sonido.reproducir("colocar");
+                actualizarTablerosDeColocacion();
+                actualizarTextoDeColocacion();
+                botonComenzarBatalla.setEnabled(true);
+            }
         });
 
-        botonComenzar.setEnabled(false);
-        botonComenzar.addActionListener(e -> iniciarBatalla());
+        JButton botonReiniciarColocacion = new JButton("Reiniciar colocación");
+        botonReiniciarColocacion.addActionListener(new ActionListener() {
+            public void actionPerformed(ActionEvent evento) {
+                logicaJugador = new LogicaBarcos();
+                indiceBarcoPendiente = 0;
+                Sonido.reproducir("click");
+                actualizarTablerosDeColocacion();
+                actualizarTextoDeColocacion();
+                botonComenzarBatalla.setEnabled(false);
+            }
+        });
 
-        fila.add(botonGirar);
-        fila.add(botonAleatorio);
-        fila.add(botonComenzar);
+        botonComenzarBatalla.setEnabled(false);
+        botonComenzarBatalla.addActionListener(new ActionListener() {
+            public void actionPerformed(ActionEvent evento) {
+                iniciarBatalla();
+            }
+        });
 
-        controles.add(etiquetaColocacion);
-        controles.add(Box.createVerticalStrut(8));
-        controles.add(fila);
+        filaDeBotones.add(botonGirar);
+        filaDeBotones.add(botonColocacionAleatoria);
+        filaDeBotones.add(botonReiniciarColocacion);
+        filaDeBotones.add(botonComenzarBatalla);
 
-        vista.add(controles, BorderLayout.SOUTH);
-        return vista;
+        panelDeControles.add(etiquetaDeColocacion);
+        panelDeControles.add(Box.createVerticalStrut(8));
+        panelDeControles.add(filaDeBotones);
+
+        vistaDeColocacion.add(panelDeControles, BorderLayout.SOUTH);
+        return vistaDeColocacion;
     }
 
-    private JPanel construirVistaBatalla() {
-        JPanel vista = new JPanel(new GridLayout(1, 2, 10, 0));
-        vista.setOpaque(false);
-        vista.setBorder(BorderFactory.createEmptyBorder(0, 10, 10, 10));
-        vista.add(envolverConTitulo(panelPropio, "Tu flota"));
-        vista.add(envolverConTitulo(panelEnemigo, "Tablero enemigo"));
-        return vista;
+    private JPanel construirVistaDeBatalla() {
+        JPanel vistaDeBatalla = new JPanel(new GridLayout(1, 2, 10, 0));
+        vistaDeBatalla.setOpaque(false);
+        vistaDeBatalla.setBorder(BorderFactory.createEmptyBorder(0, 10, 10, 10));
+        vistaDeBatalla.add(envolverConTitulo(panelDeFlotaPropia, "Tu flota"));
+        vistaDeBatalla.add(envolverConTitulo(panelDeTableroEnemigo, "Tablero enemigo"));
+        return vistaDeBatalla;
     }
 
-    private JPanel envolverConTitulo(JComponent comp, String titulo) {
+    private JPanel envolverConTitulo(JComponent componente, String titulo) {
         JPanel contenedor = new JPanel(new BorderLayout());
         contenedor.setOpaque(false);
-        JLabel etiqueta = new JLabel(titulo, SwingConstants.CENTER);
-        etiqueta.setForeground(Color.WHITE);
-        etiqueta.setFont(new Font("SansSerif", Font.BOLD, 16));
-        contenedor.add(etiqueta, BorderLayout.NORTH);
-        contenedor.add(comp, BorderLayout.CENTER);
+        JLabel etiquetaDeTitulo = new JLabel(titulo, SwingConstants.CENTER);
+        etiquetaDeTitulo.setForeground(Color.WHITE);
+        etiquetaDeTitulo.setFont(new Font("SansSerif", Font.BOLD, 16));
+        contenedor.add(etiquetaDeTitulo, BorderLayout.NORTH);
+        contenedor.add(componente, BorderLayout.CENTER);
         return contenedor;
     }
 
-    // ---------- Utilidad: ejecutar algo después de un retraso ----------
-
-    /** Como un Timer de un solo disparo, pero no ejecuta nada si la partida ya se detuvo. */
-    private void retrasar(int milisegundos, Runnable accion) {
-        Timer t = new Timer(milisegundos, e -> {
-            if (!detenido) accion.run();
-        });
-        t.setRepeats(false);
-        t.start();
+    private void actualizarTablerosDeColocacion() {
+        panelDeColocacion.actualizar(logicaJugador.getTableroPropio(), logicaJugador.getBarcosPropios());
     }
 
-    // ---------- Colocación de barcos ----------
-
-    private void actualizarEtiquetaColocacion() {
-        if (indicePendiente >= tipos.length) {
-            etiquetaColocacion.setText("Flota completa. Pulsa \"Comenzar batalla\".");
+    private void actualizarTextoDeColocacion() {
+        if (indiceBarcoPendiente >= LogicaBarcos.LONGITUDES_BARCOS.length) {
+            etiquetaDeColocacion.setText("Flota completa. Pulsa \"Comenzar batalla\".");
             return;
         }
-        String orientacion = orientacionHorizontal ? "Horizontal" : "Vertical";
-        etiquetaColocacion.setText("Coloca: " + tipos[indicePendiente] + " (" + longitudes[indicePendiente] + " casillas) - " + orientacion);
+        String textoDeOrientacion;
+        if (orientacionHorizontal) {
+            textoDeOrientacion = "Horizontal";
+        } else {
+            textoDeOrientacion = "Vertical";
+        }
+        etiquetaDeColocacion.setText("Coloca: " + LogicaBarcos.NOMBRES_BARCOS[indiceBarcoPendiente]
+                + " (" + LogicaBarcos.LONGITUDES_BARCOS[indiceBarcoPendiente] + " casillas) - " + textoDeOrientacion);
     }
 
-    private void intentarColocar(int fila, int col) {
-        if (faseActual != Fase.COLOCACION || indicePendiente >= tipos.length) return;
-        boolean ok = jugador.colocarBarco(tipos[indicePendiente], longitudes[indicePendiente], fila, col, orientacionHorizontal);
-        if (ok) {
+    private void alSeleccionarCasillaDeColocacion(int fila, int columna) {
+        if (faseActual != FASE_COLOCACION || indiceBarcoPendiente >= LogicaBarcos.LONGITUDES_BARCOS.length) {
+            return;
+        }
+        boolean barcoColocado = logicaJugador.colocarBarco(
+                LogicaBarcos.NOMBRES_BARCOS[indiceBarcoPendiente],
+                LogicaBarcos.LONGITUDES_BARCOS[indiceBarcoPendiente],
+                fila, columna, orientacionHorizontal);
+
+        if (barcoColocado) {
             Sonido.reproducir("colocar");
-            indicePendiente++;
-            actualizarVistas();
-            actualizarEtiquetaColocacion();
-            if (indicePendiente >= tipos.length) {
-                botonComenzar.setEnabled(true);
+            indiceBarcoPendiente++;
+            actualizarTablerosDeColocacion();
+            actualizarTextoDeColocacion();
+            if (indiceBarcoPendiente >= LogicaBarcos.LONGITUDES_BARCOS.length) {
+                botonComenzarBatalla.setEnabled(true);
             }
         } else {
-            etiquetaColocacion.setText("Posición inválida, intenta otra casilla.");
+            etiquetaDeColocacion.setText("Posición inválida: el barco se sale del tablero o se encima con otro. Intenta otra casilla.");
         }
     }
-
-    // ---------- Batalla ----------
 
     private void iniciarBatalla() {
-        pc.colocarBarcosAleatorio();
-        faseActual = Fase.BATALLA;
-        cardLayout.show(panelCentral, "batalla");
-        panelColocacion.setInteractivo(false);
-        disparosTurno = 0;
-        turnoJugador = random.nextBoolean();
-        actualizarVistas();
+        faseActual = FASE_BATALLA;
+        botonComenzarBatalla.setEnabled(false);
+        panelDeColocacion.setInteractivo(false);
 
-        if (turnoJugador) {
-            etiquetaEstado.setText("Tu turno: dispara al tablero enemigo");
-            panelEnemigo.setInteractivo(true);
+        panelDeColocacion.actualizar(logicaJugador.copiarTableroPropio(), logicaJugador.getBarcosPropios());
+        panelDeFlotaPropia.actualizar(logicaJugador.copiarTableroPropio(), logicaJugador.getBarcosPropios());
+        panelDeTableroEnemigo.actualizar(logicaJugador.copiarTableroDeTiro(), new ArrayList<LogicaBarcos.Barco>());
+
+        etiquetaDeEstado.setText("Esperando al servidor...");
+        administradorDePantallas.show(panelCentral, PANTALLA_BATALLA);
+
+        hiloDeRed = new Thread(new Runnable() {
+            public void run() {
+                ejecutarPartida();
+            }
+        });
+        hiloDeRed.setDaemon(true);
+        hiloDeRed.start();
+    }
+
+    private void ejecutarPartida() {
+        try {
+            boolean turnoDelJugador = cliente.enviarListoYEsperarTurno();
+            boolean partidaTerminada = false;
+
+            while (!partidaTerminada && !partidaDetenida) {
+                if (turnoDelJugador) {
+                    partidaTerminada = jugarTurnoDelJugador();
+                } else {
+                    partidaTerminada = jugarTurnoDelServidor();
+                }
+                turnoDelJugador = !turnoDelJugador;
+            }
+        } catch (Exception excepcion) {
+            if (!partidaDetenida) {
+                mostrarErrorDeConexion(excepcion.getMessage());
+            }
+        }
+    }
+
+    private boolean jugarTurnoDelJugador() throws IOException, ClassNotFoundException, InterruptedException {
+        int disparosRealizados = 0;
+        boolean jugadorFalloElDisparo = false;
+        boolean partidaTerminada = false;
+
+        while (disparosRealizados < LogicaBarcos.DISPAROS_POR_TURNO && !jugadorFalloElDisparo && !partidaTerminada) {
+            habilitarTableroEnemigo("Tu turno: elige una casilla del tablero enemigo (disparo "
+                    + (disparosRealizados + 1) + " de " + LogicaBarcos.DISPAROS_POR_TURNO + ")");
+            semaforoDeClic.acquire();
+            int filaDisparada = filaSeleccionada;
+            int columnaDisparada = columnaSeleccionada;
+
+            Mensaje mensajeResultado = cliente.disparar(filaDisparada, columnaDisparada);
+            String resultado = mensajeResultado.getTexto();
+
+            if (LogicaBarcos.RESULTADO_REPETIDO.equals(resultado) || LogicaBarcos.RESULTADO_INVALIDO.equals(resultado)) {
+                continue;
+            }
+
+            boolean resultadoValido = LogicaBarcos.RESULTADO_AGUA.equals(resultado)
+                    || LogicaBarcos.RESULTADO_TOCADO.equals(resultado)
+                    || LogicaBarcos.RESULTADO_HUNDIDO.equals(resultado);
+            if (!resultadoValido) {
+                throw new IOException("El servidor respondio con un resultado invalido: " + resultado);
+            }
+
+            logicaJugador.registrarResultadoDisparo(filaDisparada, columnaDisparada, resultado);
+            if (LogicaBarcos.RESULTADO_HUNDIDO.equals(resultado)) {
+                if (!mensajeResultado.tieneBarcoHundido()) {
+                    throw new IOException("El servidor no indico cual barco se hundio");
+                }
+                logicaJugador.registrarBarcoEnemigoHundido(mensajeResultado.obtenerBarcoHundido());
+            }
+
+            disparosRealizados++;
+            if (LogicaBarcos.RESULTADO_AGUA.equals(resultado)) {
+                jugadorFalloElDisparo = true;
+            }
+            if (mensajeResultado.isFinDeJuego()) {
+                partidaTerminada = true;
+            }
+            boolean elTurnoContinua = !jugadorFalloElDisparo && !partidaTerminada
+                    && disparosRealizados < LogicaBarcos.DISPAROS_POR_TURNO;
+
+            char[][] copiaDelTableroDeTiro = logicaJugador.copiarTableroDeTiro();
+            List<LogicaBarcos.Barco> copiaDeBarcosEnemigosHundidos = logicaJugador.copiarBarcosEnemigosHundidos();
+            String textoDeResultado = construirTextoDelDisparoDelJugador(filaDisparada, columnaDisparada, resultado,
+                    mensajeResultado.getNombreBarcoHundido(), partidaTerminada, elTurnoContinua);
+
+            mostrarDisparoEnPantalla(panelDeTableroEnemigo, filaDisparada, columnaDisparada, COLOR_RADAR_JUGADOR,
+                    resultado, copiaDelTableroDeTiro, copiaDeBarcosEnemigosHundidos, textoDeResultado);
+        }
+
+        if (partidaTerminada) {
+            finalizarPartida(true);
+        }
+        return partidaTerminada;
+    }
+
+    private boolean jugarTurnoDelServidor() throws IOException, ClassNotFoundException, InterruptedException {
+        publicarEstado("Turno del servidor...");
+
+        int disparosRecibidos = 0;
+        boolean servidorFalloElDisparo = false;
+        boolean partidaTerminada = false;
+
+        while (disparosRecibidos < LogicaBarcos.DISPAROS_POR_TURNO && !servidorFalloElDisparo && !partidaTerminada) {
+            Mensaje mensajeDisparo = cliente.esperarDisparoDelServidor();
+            int filaRecibida = mensajeDisparo.getFila();
+            int columnaRecibida = mensajeDisparo.getColumna();
+
+            String resultado = logicaJugador.recibirDisparo(filaRecibida, columnaRecibida);
+
+            if (LogicaBarcos.RESULTADO_REPETIDO.equals(resultado) || LogicaBarcos.RESULTADO_INVALIDO.equals(resultado)) {
+                cliente.enviarResultado(resultado, false, null);
+                continue;
+            }
+
+            boolean jugadorPerdio = logicaJugador.todosLosBarcosHundidos();
+            LogicaBarcos.Barco barcoPropioHundido = logicaJugador.getBarcoHundidoEnUltimoDisparo();
+            cliente.enviarResultado(resultado, jugadorPerdio, barcoPropioHundido);
+
+            disparosRecibidos++;
+            if (LogicaBarcos.RESULTADO_AGUA.equals(resultado)) {
+                servidorFalloElDisparo = true;
+            }
+            if (jugadorPerdio) {
+                partidaTerminada = true;
+            }
+            boolean elTurnoContinua = !servidorFalloElDisparo && !partidaTerminada
+                    && disparosRecibidos < LogicaBarcos.DISPAROS_POR_TURNO;
+
+            String nombreBarcoPropioHundido = null;
+            if (barcoPropioHundido != null) {
+                nombreBarcoPropioHundido = barcoPropioHundido.getNombre();
+            }
+
+            char[][] copiaDelTableroPropio = logicaJugador.copiarTableroPropio();
+            String textoDeResultado = construirTextoDelDisparoDelServidor(filaRecibida, columnaRecibida, resultado,
+                    nombreBarcoPropioHundido, partidaTerminada, elTurnoContinua);
+
+            mostrarDisparoEnPantalla(panelDeFlotaPropia, filaRecibida, columnaRecibida, COLOR_RADAR_SERVIDOR,
+                    resultado, copiaDelTableroPropio, logicaJugador.getBarcosPropios(), textoDeResultado);
+        }
+
+        if (partidaTerminada) {
+            finalizarPartida(false);
+        }
+        return partidaTerminada;
+    }
+
+    private String construirTextoDelDisparoDelJugador(int fila, int columna, String resultado, String nombreBarcoHundido,
+                                                      boolean partidaTerminada, boolean elTurnoContinua) {
+        String nombreDeCasilla = LogicaBarcos.nombreDeCasilla(fila, columna);
+        if (partidaTerminada) {
+            return "¡Hundiste el " + nombreBarcoHundido + "! Toda la flota enemiga está hundida.";
+        }
+        String textoDelSiguienteTurno;
+        if (elTurnoContinua) {
+            textoDelSiguienteTurno = " Sigues disparando.";
         } else {
-            etiquetaEstado.setText("Turno de la PC...");
-            panelEnemigo.setInteractivo(false);
-            retrasar(900, this::disparoPC);
+            textoDelSiguienteTurno = " Turno del servidor.";
         }
+        if (LogicaBarcos.RESULTADO_AGUA.equals(resultado)) {
+            return "Fallaste en " + nombreDeCasilla + "." + textoDelSiguienteTurno;
+        }
+        if (LogicaBarcos.RESULTADO_TOCADO.equals(resultado)) {
+            return "¡Tocaste un barco en " + nombreDeCasilla + "!" + textoDelSiguienteTurno;
+        }
+        return "¡Hundiste el " + nombreBarcoHundido + " enemigo!" + textoDelSiguienteTurno;
     }
 
-    private void intentarDisparoJugador(int fila, int col) {
-        if (!turnoJugador || faseActual != Fase.BATALLA) return;
-        if (jugador.getTableroTiro()[fila][col] != LogicaBarcos.AGUA) {
-            etiquetaEstado.setText("Ya disparaste en esa casilla.");
-            return;
+    private String construirTextoDelDisparoDelServidor(int fila, int columna, String resultado, String nombreBarcoHundido,
+                                                       boolean partidaTerminada, boolean elTurnoContinua) {
+        String nombreDeCasilla = LogicaBarcos.nombreDeCasilla(fila, columna);
+        if (partidaTerminada) {
+            return "El servidor hundió tu " + nombreBarcoHundido + ". Toda tu flota está hundida.";
         }
-        panelEnemigo.setInteractivo(false);
-        panelEnemigo.mostrarRadar(fila, col, RADAR_JUGADOR, () -> resolverDisparoJugador(fila, col));
-        Sonido.reproducir("radar");
-    }
-
-    private void resolverDisparoJugador(int fila, int col) {
-        String resultado = pc.recibirDisparo(fila, col);
-        boolean pcPerdio = pc.todosHundidos();
-        jugador.registrarResultadoTiro(fila, col, resultado);
-        actualizarVistas();
-
-        agregarEfectoYSonido(panelEnemigo, fila, col, resultado);
-        etiquetaEstado.setText(mensajeResultado(resultado, true));
-
-        if (pcPerdio) {
-            terminarJuego(true);
-            return;
-        }
-
-        disparosTurno++;
-        if (resultado.equals("AGUA") || disparosTurno >= 3) {
-            cambiarTurnoAPC();
+        String textoDelSiguienteTurno;
+        if (elTurnoContinua) {
+            textoDelSiguienteTurno = " Sigue disparando.";
         } else {
-            retrasar(650, () -> panelEnemigo.setInteractivo(true));
+            textoDelSiguienteTurno = " Tu turno.";
         }
-    }
-
-    private void cambiarTurnoAPC() {
-        turnoJugador = false;
-        disparosTurno = 0;
-        panelEnemigo.setInteractivo(false);
-        etiquetaEstado.setText("Turno de la PC...");
-        retrasar(900, this::disparoPC);
-    }
-
-    private void disparoPC() {
-        int[] coord = elegirDisparoPC();
-        panelPropio.mostrarRadar(coord[0], coord[1], RADAR_PC, () -> resolverDisparoPC(coord[0], coord[1]));
-        Sonido.reproducir("radar");
-    }
-
-    private void resolverDisparoPC(int fila, int col) {
-        String resultado = jugador.recibirDisparo(fila, col);
-        boolean jugadorPerdio = jugador.todosHundidos();
-        pc.registrarResultadoTiro(fila, col, resultado);
-        actualizarVistas();
-
-        agregarEfectoYSonido(panelPropio, fila, col, resultado);
-        etiquetaEstado.setText(mensajeResultado(resultado, false));
-
-        if (jugadorPerdio) {
-            terminarJuego(false);
-            return;
+        if (LogicaBarcos.RESULTADO_AGUA.equals(resultado)) {
+            return "El servidor falló en " + nombreDeCasilla + "." + textoDelSiguienteTurno;
         }
-
-        disparosTurno++;
-        if (resultado.equals("AGUA") || disparosTurno >= 3) {
-            cambiarTurnoAJugador();
-        } else {
-            retrasar(900, this::disparoPC);
+        if (LogicaBarcos.RESULTADO_TOCADO.equals(resultado)) {
+            return "¡El servidor tocó uno de tus barcos en " + nombreDeCasilla + "!" + textoDelSiguienteTurno;
         }
+        return "¡El servidor hundió tu " + nombreBarcoHundido + "!" + textoDelSiguienteTurno;
     }
 
-    private void cambiarTurnoAJugador() {
-        turnoJugador = true;
-        disparosTurno = 0;
-        etiquetaEstado.setText("Tu turno: dispara al tablero enemigo");
-        panelEnemigo.setInteractivo(true);
-    }
-
-    private int[] elegirDisparoPC() {
-        char[][] tablero = jugador.getTableroPropio();
-        int fila, col;
-        do {
-            fila = random.nextInt(LogicaBarcos.TAM);
-            col = random.nextInt(LogicaBarcos.TAM);
-        } while (tablero[fila][col] == LogicaBarcos.TOCADO
-                || tablero[fila][col] == LogicaBarcos.FALLO
-                || tablero[fila][col] == LogicaBarcos.HUNDIDO);
-        return new int[]{fila, col};
-    }
-
-    private void agregarEfectoYSonido(PanelTablero panel, int fila, int col, String resultado) {
-        PanelTablero.TipoEfecto tipo;
-        String sonido;
-        if (resultado.equals("AGUA")) {
-            tipo = PanelTablero.TipoEfecto.SPLASH;
-            sonido = "splash";
-        } else if (resultado.equals("HUNDIDO")) {
-            tipo = PanelTablero.TipoEfecto.EXPLOSION_GRANDE;
-            sonido = "explosion_grande";
-        } else {
-            tipo = PanelTablero.TipoEfecto.EXPLOSION;
-            sonido = "explosion";
-        }
-        panel.agregarEfecto(tipo, fila, col);
-        Sonido.reproducir(sonido);
-    }
-
-    private String mensajeResultado(String resultado, boolean disparoDelJugador) {
-        if (resultado.equals("AGUA")) {
-            return disparoDelJugador ? "Fallaste. Turno de la PC." : "La PC falló. Tu turno.";
-        } else if (resultado.equals("TOCADO")) {
-            return disparoDelJugador ? "¡Le diste a un barco! Sigues disparando." : "¡La PC te dio! Sigue disparando.";
-        } else {
-            return disparoDelJugador ? "¡Hundiste un barco enemigo!" : "¡La PC hundió uno de tus barcos!";
-        }
-    }
-
-    private void terminarJuego(boolean jugadorGano) {
-        faseActual = Fase.TERMINADO;
-        panelEnemigo.setInteractivo(false);
-        Sonido.reproducir(jugadorGano ? "victoria" : "derrota");
-        String mensaje = jugadorGano
-                ? "¡Ganaste! Hundiste toda la flota enemiga."
-                : "Perdiste. La PC hundió toda tu flota.";
-        // pequeña pausa para que se vea la última explosión antes del diálogo
-        retrasar(1400, () -> {
-            JOptionPane.showMessageDialog(this, mensaje, "Fin de la partida", JOptionPane.INFORMATION_MESSAGE);
-            detener();
-            alVolverMenu.run();
+    private void habilitarTableroEnemigo(final String textoDeEstado) {
+        SwingUtilities.invokeLater(new Runnable() {
+            public void run() {
+                etiquetaDeEstado.setText(textoDeEstado);
+                panelDeTableroEnemigo.setInteractivo(true);
+            }
         });
     }
 
-    private void actualizarVistas() {
-        List<LogicaBarcos.Barco> hundidosPc = new ArrayList<>();
-        for (LogicaBarcos.Barco b : pc.getMisBarcos()) {
-            if (b.estaHundido()) hundidosPc.add(b);
+    private void publicarEstado(final String textoDeEstado) {
+        SwingUtilities.invokeLater(new Runnable() {
+            public void run() {
+                etiquetaDeEstado.setText(textoDeEstado);
+            }
+        });
+    }
+
+    private void mostrarDisparoEnPantalla(final PanelTablero panel, final int fila, final int columna, final Color colorDelRadar,
+                                          final String resultado, final char[][] copiaDelTablero,
+                                          final List<LogicaBarcos.Barco> barcosAMostrar, final String textoDeEstado)
+            throws InterruptedException {
+        SwingUtilities.invokeLater(new Runnable() {
+            public void run() {
+                panel.mostrarRadar(fila, columna, colorDelRadar, new Runnable() {
+                    public void run() {
+                        panel.actualizar(copiaDelTablero, barcosAMostrar);
+                        agregarEfectoYSonido(panel, fila, columna, resultado);
+                        etiquetaDeEstado.setText(textoDeEstado);
+                        semaforoDeAnimacion.release();
+                    }
+                });
+                Sonido.reproducir("radar");
+            }
+        });
+        semaforoDeAnimacion.acquire();
+    }
+
+    private void agregarEfectoYSonido(PanelTablero panel, int fila, int columna, String resultado) {
+        int tipoDeEfecto;
+        String nombreDelSonido;
+        if (LogicaBarcos.RESULTADO_AGUA.equals(resultado)) {
+            tipoDeEfecto = PanelTablero.EFECTO_SPLASH;
+            nombreDelSonido = "splash";
+        } else if (LogicaBarcos.RESULTADO_HUNDIDO.equals(resultado)) {
+            tipoDeEfecto = PanelTablero.EFECTO_EXPLOSION_GRANDE;
+            nombreDelSonido = "explosion_grande";
+        } else {
+            tipoDeEfecto = PanelTablero.EFECTO_EXPLOSION;
+            nombreDelSonido = "explosion";
         }
-        panelEnemigo.actualizar(jugador.getTableroTiro(), hundidosPc);
-        panelPropio.actualizar(jugador.getTableroPropio(), jugador.getMisBarcos());
-        panelColocacion.actualizar(jugador.getTableroPropio(), jugador.getMisBarcos());
+        panel.agregarEfecto(tipoDeEfecto, fila, columna);
+        Sonido.reproducir(nombreDelSonido);
     }
 
-    @Override
-    protected void dibujarContenido(Graphics2D g2) {
-        // el fondo de agua ya lo pinta PanelBase; el resto son componentes Swing
+    private void alSeleccionarCasillaEnemiga(int fila, int columna) {
+        if (faseActual != FASE_BATALLA) {
+            return;
+        }
+        if (panelDeTableroEnemigo.getEstadoDeCasilla(fila, columna) != LogicaBarcos.CASILLA_AGUA) {
+            etiquetaDeEstado.setText("Ya disparaste en esa casilla.");
+            return;
+        }
+        panelDeTableroEnemigo.setInteractivo(false);
+        filaSeleccionada = fila;
+        columnaSeleccionada = columna;
+        semaforoDeClic.release();
     }
 
-    /** Detiene todos los temporizadores de esta partida (tableros, agua y retrasos pendientes). */
-    @Override
+    private void finalizarPartida(final boolean jugadorGano) throws InterruptedException {
+        SwingUtilities.invokeLater(new Runnable() {
+            public void run() {
+                faseActual = FASE_TERMINADA;
+                panelDeTableroEnemigo.setInteractivo(false);
+                if (jugadorGano) {
+                    Sonido.reproducir("victoria");
+                } else {
+                    Sonido.reproducir("derrota");
+                }
+            }
+        });
+
+        Thread.sleep(PAUSA_ANTES_DEL_MENSAJE_FINAL_MILISEGUNDOS);
+
+        final String mensajeFinal;
+        if (jugadorGano) {
+            mensajeFinal = "¡Ganaste! Hundiste toda la flota del servidor.";
+        } else {
+            mensajeFinal = "Perdiste. El servidor hundió toda tu flota.";
+        }
+
+        SwingUtilities.invokeLater(new Runnable() {
+            public void run() {
+                if (partidaDetenida) {
+                    return;
+                }
+                JOptionPane.showMessageDialog(PanelJuego.this, mensajeFinal, "Fin de la partida", JOptionPane.INFORMATION_MESSAGE);
+                detener();
+                accionVolverAlMenu.run();
+            }
+        });
+    }
+
+    private void mostrarErrorDeConexion(final String detalleDelError) {
+        SwingUtilities.invokeLater(new Runnable() {
+            public void run() {
+                if (partidaDetenida) {
+                    return;
+                }
+                JOptionPane.showMessageDialog(PanelJuego.this,
+                        "Se perdió la conexión con el servidor.\n" + detalleDelError,
+                        "Error de red", JOptionPane.ERROR_MESSAGE);
+                detener();
+                accionVolverAlMenu.run();
+            }
+        });
+    }
+
+    protected void dibujarContenido(Graphics2D graficos) {
+    }
+
     public void detener() {
-        detenido = true;
+        partidaDetenida = true;
+        if (hiloDeRed != null) {
+            hiloDeRed.interrupt();
+        }
+        cliente.cerrar();
         super.detener();
-        panelColocacion.detener();
-        panelPropio.detener();
-        panelEnemigo.detener();
+        panelDeColocacion.detener();
+        panelDeFlotaPropia.detener();
+        panelDeTableroEnemigo.detener();
     }
 }

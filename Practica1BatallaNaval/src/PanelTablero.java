@@ -1,5 +1,15 @@
-import javax.swing.*;
-import java.awt.*;
+import javax.swing.Timer;
+import java.awt.BasicStroke;
+import java.awt.Color;
+import java.awt.Font;
+import java.awt.FontMetrics;
+import java.awt.GradientPaint;
+import java.awt.Graphics2D;
+import java.awt.Point;
+import java.awt.RadialGradientPaint;
+import java.awt.RenderingHints;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.geom.Arc2D;
@@ -7,461 +17,496 @@ import java.awt.geom.GeneralPath;
 import java.awt.geom.RoundRectangle2D;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
-import java.util.function.BiConsumer;
 
-/**
- * Componente visual reutilizable para UN tablero de 10x10. Se usa tres
- * veces dentro de PanelJuego: para colocar tus barcos, para "tu flota"
- * y para el "tablero enemigo".
- *
- * No conoce reglas del juego: solo recibe un char[][] con el estado
- * de cada casilla y una lista de barcos a dibujar completos, y avisa
- * los clics mediante un BiConsumer (fila, columna).
- *
- * Aquí adentro también viven:
- *  - TipoEfecto / Efecto : animación de splash y explosión
- *  - dibujarSilueta      : el dibujo de cada barco (antes DibujoBarco)
- */
 public class PanelTablero extends PanelBase {
 
-    /** Tipos de animación que PanelJuego puede pedir. */
-    public enum TipoEfecto { SPLASH, EXPLOSION, EXPLOSION_GRANDE }
+    public static final int EFECTO_SPLASH = 0;
+    public static final int EFECTO_EXPLOSION = 1;
+    public static final int EFECTO_EXPLOSION_GRANDE = 2;
 
-    private static final int TAM = LogicaBarcos.TAM;
-    private static final long RADAR_DURACION_MS = 1100;
+    private static final int TAMANO_TABLERO = LogicaBarcos.TAMANO_TABLERO;
+    private static final int DURACION_RADAR_MILISEGUNDOS = 1100;
+    private static final int MILISEGUNDOS_ENTRE_CUADROS = 30;
 
-    // ---------- Efecto (animación de una casilla) ----------
+    public interface OyenteDeCasilla {
+        void alSeleccionarCasilla(int fila, int columna);
+    }
+
     private static class Efecto {
-        final TipoEfecto tipo;
-        final int fila;
-        final int col;
-        final long inicio;
-        final long duracionMs;
 
-        Efecto(TipoEfecto tipo, int fila, int col) {
-            this.tipo = tipo;
+        private final int tipoDeEfecto;
+        private final int fila;
+        private final int columna;
+        private final long momentoDeInicio;
+        private final long duracionEnMilisegundos;
+
+        Efecto(int tipoDeEfecto, int fila, int columna) {
+            this.tipoDeEfecto = tipoDeEfecto;
             this.fila = fila;
-            this.col = col;
-            this.inicio = System.currentTimeMillis();
-            if (tipo == TipoEfecto.SPLASH) {
-                duracionMs = 550;
-            } else if (tipo == TipoEfecto.EXPLOSION) {
-                duracionMs = 800;
+            this.columna = columna;
+            this.momentoDeInicio = System.currentTimeMillis();
+            if (tipoDeEfecto == EFECTO_SPLASH) {
+                this.duracionEnMilisegundos = 550;
+            } else if (tipoDeEfecto == EFECTO_EXPLOSION) {
+                this.duracionEnMilisegundos = 800;
             } else {
-                duracionMs = 1300;
+                this.duracionEnMilisegundos = 1300;
             }
         }
 
-        /** 0.0 (recién creado) a 1.0 (animación terminada). */
-        double progreso() {
-            long transcurrido = System.currentTimeMillis() - inicio;
-            return Math.min(1.0, transcurrido / (double) duracionMs);
+        double calcularProgreso() {
+            long tiempoTranscurrido = System.currentTimeMillis() - momentoDeInicio;
+            return Math.min(1.0, tiempoTranscurrido / (double) duracionEnMilisegundos);
         }
 
-        boolean terminado() {
-            return progreso() >= 1.0;
+        boolean haTerminado() {
+            return calcularProgreso() >= 1.0;
         }
     }
 
-    private char[][] estados;
-    private List<LogicaBarcos.Barco> barcosVisibles = new ArrayList<>();
-    private final List<Efecto> efectos = new ArrayList<>();
+    private char[][] estadosDeCasillas;
+    private List<LogicaBarcos.Barco> barcosVisibles;
+    private final List<Efecto> efectosActivos;
 
-    private boolean interactivo = false;
-    private BiConsumer<Integer, Integer> oyente;
+    private boolean interactivo;
+    private OyenteDeCasilla oyenteDeCasilla;
 
-    private boolean radarActivo = false;
-    private double anguloRadar = 0;
-    private long radarElapsed = 0;
-    private int radarFila, radarCol;
-    private Color colorRadar = new Color(60, 220, 90);
-    private Runnable radarCallback;
+    private boolean radarActivo;
+    private double anguloDelRadar;
+    private long tiempoTranscurridoDelRadar;
+    private int filaDelRadar;
+    private int columnaDelRadar;
+    private Color colorDelRadar;
+    private Runnable accionAlTerminarElRadar;
 
-    private int celda = 30;
-    private int margenX = 20;
-    private int margenY = 20;
+    private int tamanoCelda;
+    private int margenIzquierdo;
+    private int margenSuperior;
 
-    private final Timer animador;
+    private final Timer temporizadorDeAnimacion;
 
     public PanelTablero() {
-        estados = new char[TAM][TAM];
-        for (char[] fila : estados) Arrays.fill(fila, LogicaBarcos.AGUA);
+        estadosDeCasillas = new char[TAMANO_TABLERO][TAMANO_TABLERO];
+        for (int fila = 0; fila < TAMANO_TABLERO; fila++) {
+            Arrays.fill(estadosDeCasillas[fila], LogicaBarcos.CASILLA_AGUA);
+        }
+        barcosVisibles = new ArrayList<LogicaBarcos.Barco>();
+        efectosActivos = new ArrayList<Efecto>();
 
-        animador = new Timer(30, e -> tick());
-        animador.start();
+        interactivo = false;
+        oyenteDeCasilla = null;
 
-        // mousePressed (y no mouseClicked): mouseClicked se pierde si el
-        // puntero se mueve un píxel entre presionar y soltar.
+        radarActivo = false;
+        anguloDelRadar = 0;
+        tiempoTranscurridoDelRadar = 0;
+        filaDelRadar = 0;
+        columnaDelRadar = 0;
+        colorDelRadar = new Color(60, 220, 90);
+        accionAlTerminarElRadar = null;
+
+        tamanoCelda = 30;
+        margenIzquierdo = 20;
+        margenSuperior = 20;
+
+        temporizadorDeAnimacion = new Timer(MILISEGUNDOS_ENTRE_CUADROS, new ActionListener() {
+            public void actionPerformed(ActionEvent evento) {
+                avanzarAnimaciones();
+            }
+        });
+        temporizadorDeAnimacion.start();
+
         addMouseListener(new MouseAdapter() {
-            @Override
-            public void mousePressed(MouseEvent e) {
-                if (!interactivo || radarActivo || oyente == null) return;
-                int x = e.getX() - margenX;
-                int y = e.getY() - margenY;
-                // Sin este chequeo, un clic en el margen izquierdo/superior
-                // (x o y negativos de hasta -celda+1) daba 0 al dividir y se
-                // tomaba como la fila/columna 0.
-                if (x < 0 || y < 0) return;
-                int col = x / celda;
-                int fila = y / celda;
-                if (fila < TAM && col < TAM) {
-                    oyente.accept(fila, col);
+            public void mousePressed(MouseEvent evento) {
+                if (!interactivo || radarActivo || oyenteDeCasilla == null) {
+                    return;
+                }
+                int posicionXEnTablero = evento.getX() - margenIzquierdo;
+                int posicionYEnTablero = evento.getY() - margenSuperior;
+                if (posicionXEnTablero < 0 || posicionYEnTablero < 0) {
+                    return;
+                }
+                int columna = posicionXEnTablero / tamanoCelda;
+                int fila = posicionYEnTablero / tamanoCelda;
+                if (fila < TAMANO_TABLERO && columna < TAMANO_TABLERO) {
+                    oyenteDeCasilla.alSeleccionarCasilla(fila, columna);
                 }
             }
         });
     }
 
-    private void tick() {
+    private void avanzarAnimaciones() {
         boolean necesitaRepintar = false;
 
         if (radarActivo) {
-            anguloRadar += 12;
-            radarElapsed += 30;
-            if (radarElapsed >= RADAR_DURACION_MS) {
+            anguloDelRadar = anguloDelRadar + 12;
+            tiempoTranscurridoDelRadar = tiempoTranscurridoDelRadar + MILISEGUNDOS_ENTRE_CUADROS;
+            if (tiempoTranscurridoDelRadar >= DURACION_RADAR_MILISEGUNDOS) {
                 radarActivo = false;
-                Runnable callback = radarCallback;
-                radarCallback = null;
-                if (callback != null) callback.run();
+                Runnable accionPendiente = accionAlTerminarElRadar;
+                accionAlTerminarElRadar = null;
+                if (accionPendiente != null) {
+                    accionPendiente.run();
+                }
             }
             necesitaRepintar = true;
         }
 
-        if (!efectos.isEmpty()) {
-            efectos.removeIf(Efecto::terminado);
+        if (!efectosActivos.isEmpty()) {
+            Iterator<Efecto> iteradorDeEfectos = efectosActivos.iterator();
+            while (iteradorDeEfectos.hasNext()) {
+                Efecto efecto = iteradorDeEfectos.next();
+                if (efecto.haTerminado()) {
+                    iteradorDeEfectos.remove();
+                }
+            }
             necesitaRepintar = true;
         }
 
-        if (necesitaRepintar) repaint();
+        if (necesitaRepintar) {
+            repaint();
+        }
     }
 
-    public void actualizar(char[][] estados, List<LogicaBarcos.Barco> barcosVisibles) {
-        this.estados = estados;
-        this.barcosVisibles = barcosVisibles;
+    public void actualizar(char[][] nuevosEstados, List<LogicaBarcos.Barco> nuevosBarcosVisibles) {
+        this.estadosDeCasillas = nuevosEstados;
+        this.barcosVisibles = nuevosBarcosVisibles;
         repaint();
     }
 
-    public void setInteractivo(boolean valor) { this.interactivo = valor; }
-    public void setOyente(BiConsumer<Integer, Integer> oyente) { this.oyente = oyente; }
+    public char getEstadoDeCasilla(int fila, int columna) {
+        return estadosDeCasillas[fila][columna];
+    }
 
-    @Override
+    public void setInteractivo(boolean valor) {
+        this.interactivo = valor;
+    }
+
+    public void setOyenteDeCasilla(OyenteDeCasilla oyente) {
+        this.oyenteDeCasilla = oyente;
+    }
+
     public void detener() {
         super.detener();
-        animador.stop();
+        temporizadorDeAnimacion.stop();
     }
 
-    public void agregarEfecto(TipoEfecto tipo, int fila, int col) {
-        efectos.add(new Efecto(tipo, fila, col));
+    public void agregarEfecto(int tipoDeEfecto, int fila, int columna) {
+        efectosActivos.add(new Efecto(tipoDeEfecto, fila, columna));
         repaint();
     }
 
-    public void mostrarRadar(int fila, int col, Color color, Runnable alTerminar) {
-        this.radarFila = fila;
-        this.radarCol = col;
-        this.colorRadar = color;
-        this.anguloRadar = 0;
-        this.radarElapsed = 0;
+    public void mostrarRadar(int fila, int columna, Color color, Runnable accionAlTerminar) {
+        this.filaDelRadar = fila;
+        this.columnaDelRadar = columna;
+        this.colorDelRadar = color;
+        this.anguloDelRadar = 0;
+        this.tiempoTranscurridoDelRadar = 0;
+        this.accionAlTerminarElRadar = accionAlTerminar;
         this.radarActivo = true;
-        this.radarCallback = alTerminar;
     }
 
     private void calcularGeometria() {
-        int ancho = getWidth();
-        int alto = getHeight();
-        int disponible = Math.min(ancho, alto) - 30;
-        celda = Math.max(12, disponible / TAM);
-        int tableroPx = celda * TAM;
-        margenX = (ancho - tableroPx) / 2;
-        margenY = Math.max(24, (alto - tableroPx) / 2);
+        int anchoDelPanel = getWidth();
+        int altoDelPanel = getHeight();
+        int espacioDisponible = Math.min(anchoDelPanel, altoDelPanel) - 30;
+        tamanoCelda = Math.max(12, espacioDisponible / TAMANO_TABLERO);
+        int tamanoDelTableroEnPixeles = tamanoCelda * TAMANO_TABLERO;
+        margenIzquierdo = (anchoDelPanel - tamanoDelTableroEnPixeles) / 2;
+        margenSuperior = Math.max(24, (altoDelPanel - tamanoDelTableroEnPixeles) / 2);
     }
 
-    @Override
-    protected void dibujarContenido(Graphics2D g2) {
+    protected void dibujarContenido(Graphics2D graficos) {
         calcularGeometria();
 
-        for (int f = 0; f < TAM; f++) {
-            for (int c = 0; c < TAM; c++) {
-                int x = margenX + c * celda;
-                int y = margenY + f * celda;
-                dibujarCelda(g2, x, y, estados[f][c]);
+        for (int fila = 0; fila < TAMANO_TABLERO; fila++) {
+            for (int columna = 0; columna < TAMANO_TABLERO; columna++) {
+                int posicionX = margenIzquierdo + columna * tamanoCelda;
+                int posicionY = margenSuperior + fila * tamanoCelda;
+                dibujarCasilla(graficos, posicionX, posicionY, estadosDeCasillas[fila][columna]);
             }
         }
 
-        for (LogicaBarcos.Barco b : barcosVisibles) {
-            dibujarBarcoCompleto(g2, b);
+        for (LogicaBarcos.Barco barco : barcosVisibles) {
+            dibujarBarcoCompleto(graficos, barco);
         }
 
-        dibujarEtiquetas(g2);
+        dibujarEtiquetasDeCoordenadas(graficos);
 
-        for (Efecto ef : efectos) {
-            int cx = margenX + ef.col * celda + celda / 2;
-            int cy = margenY + ef.fila * celda + celda / 2;
-            dibujarEfecto(g2, ef, cx, cy, celda);
+        for (Efecto efecto : efectosActivos) {
+            int centroX = margenIzquierdo + efecto.columna * tamanoCelda + tamanoCelda / 2;
+            int centroY = margenSuperior + efecto.fila * tamanoCelda + tamanoCelda / 2;
+            dibujarEfecto(graficos, efecto, centroX, centroY);
         }
 
-        if (radarActivo) dibujarRadar(g2);
-    }
-
-    private void dibujarCelda(Graphics2D g2, int x, int y, char estado) {
-        g2.setColor(new Color(255, 255, 255, 25));
-        g2.fillRect(x, y, celda, celda);
-        g2.setColor(new Color(255, 255, 255, 60));
-        g2.drawRect(x, y, celda, celda);
-
-        if (estado == LogicaBarcos.FALLO) {
-            int r = (int) (celda * 0.12);
-            g2.setColor(new Color(230, 240, 255, 190));
-            g2.setStroke(new BasicStroke(2f));
-            g2.drawOval(x + celda / 2 - r, y + celda / 2 - r, r * 2, r * 2);
-        } else if (estado == LogicaBarcos.TOCADO || estado == LogicaBarcos.HUNDIDO) {
-            int r = (int) (celda * 0.26);
-            g2.setColor(new Color(40, 20, 10, 170));
-            g2.fillOval(x + celda / 2 - r, y + celda / 2 - r, r * 2, r * 2);
-            g2.setColor(new Color(255, 100, 30, 210));
-            g2.setStroke(new BasicStroke(2f));
-            g2.drawLine(x + celda / 2 - r, y + celda / 2 - r, x + celda / 2 + r, y + celda / 2 + r);
-            g2.drawLine(x + celda / 2 - r, y + celda / 2 + r, x + celda / 2 + r, y + celda / 2 - r);
+        if (radarActivo) {
+            dibujarRadar(graficos);
         }
     }
 
-    private void dibujarBarcoCompleto(Graphics2D g2, LogicaBarcos.Barco b) {
-        List<int[]> pos = b.getPosiciones();
-        if (pos.isEmpty()) return;
-        int[] inicio = pos.get(0);
-        boolean horizontal = pos.size() == 1 || pos.get(0)[0] == pos.get(pos.size() - 1)[0];
-        int x = margenX + inicio[1] * celda;
-        int y = margenY + inicio[0] * celda;
-        dibujarSilueta(g2, x, y, celda, b.getLongitud(), horizontal);
+    private void dibujarCasilla(Graphics2D graficos, int posicionX, int posicionY, char estadoDeCasilla) {
+        graficos.setColor(new Color(255, 255, 255, 25));
+        graficos.fillRect(posicionX, posicionY, tamanoCelda, tamanoCelda);
+        graficos.setColor(new Color(255, 255, 255, 60));
+        graficos.drawRect(posicionX, posicionY, tamanoCelda, tamanoCelda);
+
+        int centroX = posicionX + tamanoCelda / 2;
+        int centroY = posicionY + tamanoCelda / 2;
+
+        if (estadoDeCasilla == LogicaBarcos.CASILLA_FALLO) {
+            int radioDelCirculo = (int) (tamanoCelda * 0.12);
+            graficos.setColor(new Color(230, 240, 255, 190));
+            graficos.setStroke(new BasicStroke(2f));
+            graficos.drawOval(centroX - radioDelCirculo, centroY - radioDelCirculo, radioDelCirculo * 2, radioDelCirculo * 2);
+        } else if (estadoDeCasilla == LogicaBarcos.CASILLA_TOCADA || estadoDeCasilla == LogicaBarcos.CASILLA_HUNDIDA) {
+            int radioDeLaMarca = (int) (tamanoCelda * 0.26);
+            graficos.setColor(new Color(40, 20, 10, 170));
+            graficos.fillOval(centroX - radioDeLaMarca, centroY - radioDeLaMarca, radioDeLaMarca * 2, radioDeLaMarca * 2);
+            graficos.setColor(new Color(255, 100, 30, 210));
+            graficos.setStroke(new BasicStroke(2f));
+            graficos.drawLine(centroX - radioDeLaMarca, centroY - radioDeLaMarca, centroX + radioDeLaMarca, centroY + radioDeLaMarca);
+            graficos.drawLine(centroX - radioDeLaMarca, centroY + radioDeLaMarca, centroX + radioDeLaMarca, centroY - radioDeLaMarca);
+        }
     }
 
-    private void dibujarEtiquetas(Graphics2D g2) {
-        g2.setColor(new Color(255, 255, 255, 210));
-        g2.setFont(new Font("SansSerif", Font.BOLD, Math.max(10, celda / 3)));
-        for (int c = 0; c < TAM; c++) {
-            String txt = String.valueOf(c + 1);
-            g2.drawString(txt, margenX + c * celda + celda / 2 - 4, margenY - 8);
+    private void dibujarBarcoCompleto(Graphics2D graficos, LogicaBarcos.Barco barco) {
+        int posicionX = margenIzquierdo + barco.getColumnaInicial() * tamanoCelda;
+        int posicionY = margenSuperior + barco.getFilaInicial() * tamanoCelda;
+        dibujarSilueta(graficos, posicionX, posicionY, tamanoCelda, barco.getLongitud(), barco.isHorizontal());
+    }
+
+    private void dibujarEtiquetasDeCoordenadas(Graphics2D graficos) {
+        graficos.setColor(new Color(255, 255, 255, 210));
+        graficos.setFont(new Font("SansSerif", Font.BOLD, Math.max(10, tamanoCelda / 3)));
+        for (int columna = 0; columna < TAMANO_TABLERO; columna++) {
+            String textoDeColumna = String.valueOf(columna + 1);
+            graficos.drawString(textoDeColumna, margenIzquierdo + columna * tamanoCelda + tamanoCelda / 2 - 4, margenSuperior - 8);
         }
-        for (int f = 0; f < TAM; f++) {
-            String txt = String.valueOf((char) ('A' + f));
-            g2.drawString(txt, margenX - 18, margenY + f * celda + celda / 2 + 5);
+        for (int fila = 0; fila < TAMANO_TABLERO; fila++) {
+            String textoDeFila = String.valueOf((char) ('A' + fila));
+            graficos.drawString(textoDeFila, margenIzquierdo - 18, margenSuperior + fila * tamanoCelda + tamanoCelda / 2 + 5);
         }
     }
 
-    // ---------- Silueta del barco (antes la clase DibujoBarco) ----------
+    private static void dibujarSilueta(Graphics2D graficosOriginales, int posicionXDeCelda, int posicionYDeCelda,
+                                       int tamanoDeCelda, int longitudDelBarco, boolean horizontal) {
+        Graphics2D graficos = (Graphics2D) graficosOriginales.create();
+        graficos.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-    /**
-     * Dibuja un barco "estilizado" usando solo formas geométricas y
-     * degradados de Graphics2D (sin imágenes). Siempre se dibuja
-     * "acostado" en coordenadas locales; si el barco es vertical se
-     * rota el lienzo 90 grados antes de dibujar.
-     */
-    private static void dibujarSilueta(Graphics2D g2Original, int xCelda, int yCelda, int celda, int longitud, boolean horizontal) {
-        Graphics2D g2 = (Graphics2D) g2Original.create();
-        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-
-        g2.translate(xCelda, yCelda);
+        graficos.translate(posicionXDeCelda, posicionYDeCelda);
         if (!horizontal) {
-            g2.rotate(Math.PI / 2);
-            g2.translate(0, -celda);
+            graficos.rotate(Math.PI / 2);
+            graficos.translate(0, -tamanoDeCelda);
         }
 
-        int anchoTotal = longitud * celda;
-        double topY = celda * 0.16;
-        double botY = celda * 0.84;
-        double midY = celda * 0.5;
+        int anchoTotal = longitudDelBarco * tamanoDeCelda;
+        double bordeSuperior = tamanoDeCelda * 0.16;
+        double bordeInferior = tamanoDeCelda * 0.84;
+        double lineaMedia = tamanoDeCelda * 0.5;
 
         GeneralPath casco = new GeneralPath();
-        casco.moveTo(anchoTotal * 0.04, topY);
-        casco.lineTo(anchoTotal * 0.82, topY);
-        casco.lineTo(anchoTotal * 0.98, midY);
-        casco.lineTo(anchoTotal * 0.82, botY);
-        casco.lineTo(anchoTotal * 0.04, botY);
-        casco.lineTo(0, midY);
+        casco.moveTo(anchoTotal * 0.04, bordeSuperior);
+        casco.lineTo(anchoTotal * 0.82, bordeSuperior);
+        casco.lineTo(anchoTotal * 0.98, lineaMedia);
+        casco.lineTo(anchoTotal * 0.82, bordeInferior);
+        casco.lineTo(anchoTotal * 0.04, bordeInferior);
+        casco.lineTo(0, lineaMedia);
         casco.closePath();
 
-        g2.setPaint(new GradientPaint(0, (float) topY, new Color(205, 208, 212),
-                0, (float) botY, new Color(85, 90, 98)));
-        g2.fill(casco);
+        graficos.setPaint(new GradientPaint(0, (float) bordeSuperior, new Color(205, 208, 212),
+                0, (float) bordeInferior, new Color(85, 90, 98)));
+        graficos.fill(casco);
 
-        g2.setColor(new Color(35, 38, 45));
-        g2.setStroke(new BasicStroke(Math.max(1f, (float) (celda * 0.03))));
-        g2.draw(casco);
+        graficos.setColor(new Color(35, 38, 45));
+        graficos.setStroke(new BasicStroke(Math.max(1f, (float) (tamanoDeCelda * 0.03))));
+        graficos.draw(casco);
 
-        // linea de cubierta
-        g2.setColor(new Color(255, 255, 255, 90));
-        g2.setStroke(new BasicStroke(Math.max(1f, (float) (celda * 0.015))));
-        g2.drawLine((int) (anchoTotal * 0.06), (int) (topY + celda * 0.05),
-                (int) (anchoTotal * 0.8), (int) (topY + celda * 0.05));
+        graficos.setColor(new Color(255, 255, 255, 90));
+        graficos.setStroke(new BasicStroke(Math.max(1f, (float) (tamanoDeCelda * 0.015))));
+        graficos.drawLine((int) (anchoTotal * 0.06), (int) (bordeSuperior + tamanoDeCelda * 0.05),
+                (int) (anchoTotal * 0.8), (int) (bordeSuperior + tamanoDeCelda * 0.05));
 
-        // superestructura: 1 bloque en barcos chicos, 2 en barcos grandes
-        int bloques = longitud >= 4 ? 2 : 1;
-        double anchoBloque = anchoTotal * (longitud >= 4 ? 0.18 : 0.28);
-        double altoBloque = celda * 0.36;
-        for (int b = 0; b < bloques; b++) {
-            double cx = anchoTotal * (bloques == 1 ? 0.5 : (0.35 + b * 0.3));
-            double bx = cx - anchoBloque / 2;
-            double by = midY - altoBloque / 2;
-            RoundRectangle2D bloque = new RoundRectangle2D.Double(bx, by, anchoBloque, altoBloque, celda * 0.08, celda * 0.08);
-            g2.setPaint(new GradientPaint(0, (float) by, new Color(235, 236, 238),
-                    0, (float) (by + altoBloque), new Color(150, 153, 158)));
-            g2.fill(bloque);
-            g2.setColor(new Color(35, 38, 45));
-            g2.setStroke(new BasicStroke(Math.max(1f, (float) (celda * 0.02))));
-            g2.draw(bloque);
+        int cantidadDeBloques = 1;
+        double anchoDeBloque = anchoTotal * 0.28;
+        if (longitudDelBarco >= 4) {
+            cantidadDeBloques = 2;
+            anchoDeBloque = anchoTotal * 0.18;
+        }
+        double altoDeBloque = tamanoDeCelda * 0.36;
+        for (int numeroDeBloque = 0; numeroDeBloque < cantidadDeBloques; numeroDeBloque++) {
+            double centroDelBloque = anchoTotal * 0.5;
+            if (cantidadDeBloques == 2) {
+                centroDelBloque = anchoTotal * (0.35 + numeroDeBloque * 0.3);
+            }
+            double posicionXDelBloque = centroDelBloque - anchoDeBloque / 2;
+            double posicionYDelBloque = lineaMedia - altoDeBloque / 2;
+            RoundRectangle2D bloque = new RoundRectangle2D.Double(posicionXDelBloque, posicionYDelBloque,
+                    anchoDeBloque, altoDeBloque, tamanoDeCelda * 0.08, tamanoDeCelda * 0.08);
+            graficos.setPaint(new GradientPaint(0, (float) posicionYDelBloque, new Color(235, 236, 238),
+                    0, (float) (posicionYDelBloque + altoDeBloque), new Color(150, 153, 158)));
+            graficos.fill(bloque);
+            graficos.setColor(new Color(35, 38, 45));
+            graficos.setStroke(new BasicStroke(Math.max(1f, (float) (tamanoDeCelda * 0.02))));
+            graficos.draw(bloque);
         }
 
-        // mastil con antena de radar
-        double mastilX = anchoTotal * (bloques == 1 ? 0.5 : 0.65);
-        g2.setColor(new Color(60, 62, 68));
-        g2.setStroke(new BasicStroke(Math.max(1f, (float) (celda * 0.02))));
-        g2.drawLine((int) mastilX, (int) (midY - altoBloque / 2), (int) mastilX, (int) (topY - celda * 0.02));
-        int radioAntena = (int) (celda * 0.05);
-        g2.fillOval((int) (mastilX - radioAntena), (int) (topY - celda * 0.02) - radioAntena, radioAntena * 2, radioAntena * 2);
+        double posicionDelMastil = anchoTotal * 0.5;
+        if (cantidadDeBloques == 2) {
+            posicionDelMastil = anchoTotal * 0.65;
+        }
+        graficos.setColor(new Color(60, 62, 68));
+        graficos.setStroke(new BasicStroke(Math.max(1f, (float) (tamanoDeCelda * 0.02))));
+        graficos.drawLine((int) posicionDelMastil, (int) (lineaMedia - altoDeBloque / 2),
+                (int) posicionDelMastil, (int) (bordeSuperior - tamanoDeCelda * 0.02));
+        int radioDeLaAntena = (int) (tamanoDeCelda * 0.05);
+        graficos.fillOval((int) (posicionDelMastil - radioDeLaAntena), (int) (bordeSuperior - tamanoDeCelda * 0.02) - radioDeLaAntena,
+                radioDeLaAntena * 2, radioDeLaAntena * 2);
 
-        // pequeños cañones para barcos medianos/grandes
-        if (longitud >= 3) {
-            double[] posiciones = longitud >= 4 ? new double[]{0.12, 0.9} : new double[]{0.12};
-            for (double pfrac : posiciones) {
-                double gx = anchoTotal * pfrac;
-                double gAncho = celda * 0.12;
-                double gAlto = celda * 0.22;
-                g2.setColor(new Color(50, 52, 58));
-                g2.fillRoundRect((int) (gx - gAncho / 2), (int) (midY - gAlto / 2), (int) gAncho, (int) gAlto, 3, 3);
+        if (longitudDelBarco >= 3) {
+            double[] posicionesDeCanones = {0.12};
+            if (longitudDelBarco >= 4) {
+                posicionesDeCanones = new double[]{0.12, 0.9};
+            }
+            for (double fraccionDePosicion : posicionesDeCanones) {
+                double posicionDelCanon = anchoTotal * fraccionDePosicion;
+                double anchoDelCanon = tamanoDeCelda * 0.12;
+                double altoDelCanon = tamanoDeCelda * 0.22;
+                graficos.setColor(new Color(50, 52, 58));
+                graficos.fillRoundRect((int) (posicionDelCanon - anchoDelCanon / 2), (int) (lineaMedia - altoDelCanon / 2),
+                        (int) anchoDelCanon, (int) altoDelCanon, 3, 3);
             }
         }
 
-        // luz de navegación en la proa
-        g2.setColor(new Color(220, 40, 40));
-        int rLuz = (int) (celda * 0.08);
-        g2.fillOval((int) (anchoTotal * 0.93) - rLuz / 2, (int) (midY - rLuz / 2), rLuz, rLuz);
+        graficos.setColor(new Color(220, 40, 40));
+        int radioDeLaLuz = (int) (tamanoDeCelda * 0.08);
+        graficos.fillOval((int) (anchoTotal * 0.93) - radioDeLaLuz / 2, (int) (lineaMedia - radioDeLaLuz / 2), radioDeLaLuz, radioDeLaLuz);
 
-        g2.dispose();
+        graficos.dispose();
     }
 
-    // ---------- Efectos (splash / explosión) ----------
-
-    private void dibujarEfecto(Graphics2D g2, Efecto ef, int cx, int cy, int celda) {
-        double p = ef.progreso();
-        if (ef.tipo == TipoEfecto.SPLASH) {
-            dibujarSplash(g2, cx, cy, celda, p);
-        } else if (ef.tipo == TipoEfecto.EXPLOSION) {
-            dibujarExplosion(g2, cx, cy, celda, p, 1.0);
+    private void dibujarEfecto(Graphics2D graficos, Efecto efecto, int centroX, int centroY) {
+        double progreso = efecto.calcularProgreso();
+        if (efecto.tipoDeEfecto == EFECTO_SPLASH) {
+            dibujarSalpicadura(graficos, centroX, centroY, progreso);
+        } else if (efecto.tipoDeEfecto == EFECTO_EXPLOSION) {
+            dibujarExplosion(graficos, centroX, centroY, progreso, 1.0);
         } else {
-            dibujarExplosion(g2, cx, cy, celda, p, 1.8);
+            dibujarExplosion(graficos, centroX, centroY, progreso, 1.8);
         }
     }
 
-    private void dibujarSplash(Graphics2D g2, int cx, int cy, int celda, double p) {
-        int radioMax = (int) (celda * 0.55);
-        int radio = (int) (radioMax * p);
-        int alfa = Math.max(0, (int) (200 * (1 - p)));
+    private void dibujarSalpicadura(Graphics2D graficos, int centroX, int centroY, double progreso) {
+        int radioMaximo = (int) (tamanoCelda * 0.55);
+        int radioActual = (int) (radioMaximo * progreso);
+        int transparencia = Math.max(0, (int) (200 * (1 - progreso)));
 
-        g2.setColor(new Color(220, 240, 255, alfa));
-        g2.fillOval(cx - radio, cy - radio, radio * 2, radio * 2);
-        g2.setColor(new Color(255, 255, 255, alfa));
-        g2.setStroke(new BasicStroke(2f));
-        g2.drawOval(cx - radio, cy - radio, radio * 2, radio * 2);
+        graficos.setColor(new Color(220, 240, 255, transparencia));
+        graficos.fillOval(centroX - radioActual, centroY - radioActual, radioActual * 2, radioActual * 2);
+        graficos.setColor(new Color(255, 255, 255, transparencia));
+        graficos.setStroke(new BasicStroke(2f));
+        graficos.drawOval(centroX - radioActual, centroY - radioActual, radioActual * 2, radioActual * 2);
 
-        int gotas = 5;
-        for (int i = 0; i < gotas; i++) {
-            double angulo = (2 * Math.PI / gotas) * i;
-            int dist = (int) (radioMax * 0.9 * p);
-            int gx = cx + (int) (Math.cos(angulo) * dist);
-            int gy = cy + (int) (Math.sin(angulo) * dist);
-            int r = (int) (celda * 0.05 * (1 - p)) + 1;
-            g2.setColor(new Color(200, 230, 255, alfa));
-            g2.fillOval(gx - r, gy - r, r * 2, r * 2);
+        int cantidadDeGotas = 5;
+        for (int numeroDeGota = 0; numeroDeGota < cantidadDeGotas; numeroDeGota++) {
+            double angulo = (2 * Math.PI / cantidadDeGotas) * numeroDeGota;
+            int distanciaDelCentro = (int) (radioMaximo * 0.9 * progreso);
+            int posicionXDeGota = centroX + (int) (Math.cos(angulo) * distanciaDelCentro);
+            int posicionYDeGota = centroY + (int) (Math.sin(angulo) * distanciaDelCentro);
+            int radioDeGota = (int) (tamanoCelda * 0.05 * (1 - progreso)) + 1;
+            graficos.setColor(new Color(200, 230, 255, transparencia));
+            graficos.fillOval(posicionXDeGota - radioDeGota, posicionYDeGota - radioDeGota, radioDeGota * 2, radioDeGota * 2);
         }
     }
 
-    private void dibujarExplosion(Graphics2D g2, int cx, int cy, int celda, double p, double escala) {
-        int radioMax = (int) (celda * 0.7 * escala);
-        int radio = Math.max(1, (int) (radioMax * Math.min(1.0, p * 1.6)));
-        int alfaCuerpo = Math.max(0, (int) (220 * (1 - p)));
+    private void dibujarExplosion(Graphics2D graficos, int centroX, int centroY, double progreso, double escala) {
+        int radioMaximo = (int) (tamanoCelda * 0.7 * escala);
+        int radioActual = Math.max(1, (int) (radioMaximo * Math.min(1.0, progreso * 1.6)));
+        int transparenciaDelCuerpo = Math.max(0, (int) (220 * (1 - progreso)));
 
-        if (p < 0.25) {
-            int alfaFlash = (int) (255 * (1 - p / 0.25));
-            g2.setColor(new Color(255, 255, 255, alfaFlash));
-            int rf = (int) (radioMax * 1.1);
-            g2.fillOval(cx - rf, cy - rf, rf * 2, rf * 2);
+        if (progreso < 0.25) {
+            int transparenciaDelDestello = (int) (255 * (1 - progreso / 0.25));
+            graficos.setColor(new Color(255, 255, 255, transparenciaDelDestello));
+            int radioDelDestello = (int) (radioMaximo * 1.1);
+            graficos.fillOval(centroX - radioDelDestello, centroY - radioDelDestello, radioDelDestello * 2, radioDelDestello * 2);
         }
 
-        RadialGradientPaint fuego = new RadialGradientPaint(
-                new Point(cx, cy), radio,
+        RadialGradientPaint degradadoDeFuego = new RadialGradientPaint(
+                new Point(centroX, centroY), radioActual,
                 new float[]{0f, 0.6f, 1f},
                 new Color[]{
-                        new Color(255, 240, 180, alfaCuerpo),
-                        new Color(255, 120, 30, alfaCuerpo),
+                        new Color(255, 240, 180, transparenciaDelCuerpo),
+                        new Color(255, 120, 30, transparenciaDelCuerpo),
                         new Color(120, 20, 10, 0)
                 });
-        g2.setPaint(fuego);
-        g2.fillOval(cx - radio, cy - radio, radio * 2, radio * 2);
+        graficos.setPaint(degradadoDeFuego);
+        graficos.fillOval(centroX - radioActual, centroY - radioActual, radioActual * 2, radioActual * 2);
 
-        int particulas = (int) (8 * escala);
-        for (int i = 0; i < particulas; i++) {
-            double angulo = (2 * Math.PI / particulas) * i + p * 2;
-            int dist = (int) (radioMax * 1.3 * p);
-            int px = cx + (int) (Math.cos(angulo) * dist);
-            int py = cy + (int) (Math.sin(angulo) * dist);
-            int r = (int) (celda * 0.06 * escala * (1 - p)) + 1;
-            g2.setColor(new Color(255, 180, 60, alfaCuerpo));
-            g2.fillOval(px - r, py - r, r * 2, r * 2);
+        int cantidadDeParticulas = (int) (8 * escala);
+        for (int numeroDeParticula = 0; numeroDeParticula < cantidadDeParticulas; numeroDeParticula++) {
+            double angulo = (2 * Math.PI / cantidadDeParticulas) * numeroDeParticula + progreso * 2;
+            int distanciaDelCentro = (int) (radioMaximo * 1.3 * progreso);
+            int posicionXDeParticula = centroX + (int) (Math.cos(angulo) * distanciaDelCentro);
+            int posicionYDeParticula = centroY + (int) (Math.sin(angulo) * distanciaDelCentro);
+            int radioDeParticula = (int) (tamanoCelda * 0.06 * escala * (1 - progreso)) + 1;
+            graficos.setColor(new Color(255, 180, 60, transparenciaDelCuerpo));
+            graficos.fillOval(posicionXDeParticula - radioDeParticula, posicionYDeParticula - radioDeParticula,
+                    radioDeParticula * 2, radioDeParticula * 2);
         }
 
-        if (p > 0.5) {
-            int alfaHumo = Math.max(0, (int) (140 * ((p - 0.5) / 0.5) * (1 - p)));
-            g2.setColor(new Color(70, 70, 70, alfaHumo));
-            int rh = (int) (radioMax * 0.6);
-            int subida = (int) (celda * 0.4 * (p - 0.5));
-            g2.fillOval(cx - rh, cy - rh - subida, rh * 2, rh * 2);
+        if (progreso > 0.5) {
+            int transparenciaDelHumo = Math.max(0, (int) (140 * ((progreso - 0.5) / 0.5) * (1 - progreso)));
+            graficos.setColor(new Color(70, 70, 70, transparenciaDelHumo));
+            int radioDelHumo = (int) (radioMaximo * 0.6);
+            int alturaDeSubida = (int) (tamanoCelda * 0.4 * (progreso - 0.5));
+            graficos.fillOval(centroX - radioDelHumo, centroY - radioDelHumo - alturaDeSubida, radioDelHumo * 2, radioDelHumo * 2);
         }
     }
 
-    // ---------- Radar (pantalla de "apuntando") ----------
+    private void dibujarRadar(Graphics2D graficos) {
+        int tamanoDelTableroEnPixeles = tamanoCelda * TAMANO_TABLERO;
+        graficos.setColor(new Color(0, 0, 0, 140));
+        graficos.fillRect(margenIzquierdo, margenSuperior, tamanoDelTableroEnPixeles, tamanoDelTableroEnPixeles);
 
-    private void dibujarRadar(Graphics2D g2) {
-        int tableroPx = celda * TAM;
-        g2.setColor(new Color(0, 0, 0, 140));
-        g2.fillRect(margenX, margenY, tableroPx, tableroPx);
+        int centroX = margenIzquierdo + tamanoDelTableroEnPixeles / 2;
+        int centroY = margenSuperior + tamanoDelTableroEnPixeles / 2;
+        int radioMaximo = tamanoDelTableroEnPixeles / 2;
 
-        int cx = margenX + tableroPx / 2;
-        int cy = margenY + tableroPx / 2;
-        int radioMax = tableroPx / 2;
-
-        g2.setStroke(new BasicStroke(1.5f));
-        g2.setColor(new Color(colorRadar.getRed(), colorRadar.getGreen(), colorRadar.getBlue(), 90));
-        for (int anillo = 1; anillo <= 4; anillo++) {
-            int r = radioMax * anillo / 4;
-            g2.drawOval(cx - r, cy - r, r * 2, r * 2);
+        graficos.setStroke(new BasicStroke(1.5f));
+        graficos.setColor(new Color(colorDelRadar.getRed(), colorDelRadar.getGreen(), colorDelRadar.getBlue(), 90));
+        for (int numeroDeAnillo = 1; numeroDeAnillo <= 4; numeroDeAnillo++) {
+            int radioDelAnillo = radioMaximo * numeroDeAnillo / 4;
+            graficos.drawOval(centroX - radioDelAnillo, centroY - radioDelAnillo, radioDelAnillo * 2, radioDelAnillo * 2);
         }
-        g2.drawLine(cx - radioMax, cy, cx + radioMax, cy);
-        g2.drawLine(cx, cy - radioMax, cx, cy + radioMax);
+        graficos.drawLine(centroX - radioMaximo, centroY, centroX + radioMaximo, centroY);
+        graficos.drawLine(centroX, centroY - radioMaximo, centroX, centroY + radioMaximo);
 
-        Arc2D.Double sector = new Arc2D.Double(cx - radioMax, cy - radioMax, radioMax * 2, radioMax * 2,
-                anguloRadar, 40, Arc2D.PIE);
-        g2.setColor(new Color(colorRadar.getRed(), colorRadar.getGreen(), colorRadar.getBlue(), 90));
-        g2.fill(sector);
+        Arc2D.Double sectorDeBarrido = new Arc2D.Double(centroX - radioMaximo, centroY - radioMaximo,
+                radioMaximo * 2, radioMaximo * 2, anguloDelRadar, 40, Arc2D.PIE);
+        graficos.setColor(new Color(colorDelRadar.getRed(), colorDelRadar.getGreen(), colorDelRadar.getBlue(), 90));
+        graficos.fill(sectorDeBarrido);
 
-        g2.setColor(colorRadar);
-        g2.setStroke(new BasicStroke(2f));
-        double radAngulo = Math.toRadians(-anguloRadar);
-        int lx = cx + (int) (Math.cos(radAngulo) * radioMax);
-        int ly = cy + (int) (Math.sin(radAngulo) * radioMax);
-        g2.drawLine(cx, cy, lx, ly);
+        graficos.setColor(colorDelRadar);
+        graficos.setStroke(new BasicStroke(2f));
+        double anguloEnRadianes = Math.toRadians(-anguloDelRadar);
+        int extremoDeLaLineaX = centroX + (int) (Math.cos(anguloEnRadianes) * radioMaximo);
+        int extremoDeLaLineaY = centroY + (int) (Math.sin(anguloEnRadianes) * radioMaximo);
+        graficos.drawLine(centroX, centroY, extremoDeLaLineaX, extremoDeLaLineaY);
 
-        int px = margenX + radarCol * celda + celda / 2;
-        int py = margenY + radarFila * celda + celda / 2;
-        boolean parpadeo = (radarElapsed / 150) % 2 == 0;
-        if (parpadeo) {
-            g2.setColor(colorRadar);
-            int r = celda / 6;
-            g2.fillOval(px - r, py - r, r * 2, r * 2);
+        int posicionDelObjetivoX = margenIzquierdo + columnaDelRadar * tamanoCelda + tamanoCelda / 2;
+        int posicionDelObjetivoY = margenSuperior + filaDelRadar * tamanoCelda + tamanoCelda / 2;
+        boolean objetivoVisible = (tiempoTranscurridoDelRadar / 150) % 2 == 0;
+        if (objetivoVisible) {
+            graficos.setColor(colorDelRadar);
+            int radioDelObjetivo = tamanoCelda / 6;
+            graficos.fillOval(posicionDelObjetivoX - radioDelObjetivo, posicionDelObjetivoY - radioDelObjetivo,
+                    radioDelObjetivo * 2, radioDelObjetivo * 2);
         }
 
-        g2.setColor(Color.WHITE);
-        g2.setFont(new Font("Monospaced", Font.BOLD, Math.max(12, celda / 2)));
-        String texto = "ESCANEANDO...";
-        FontMetrics fm = g2.getFontMetrics();
-        g2.drawString(texto, cx - fm.stringWidth(texto) / 2, margenY + tableroPx + 20);
+        graficos.setColor(Color.WHITE);
+        graficos.setFont(new Font("Monospaced", Font.BOLD, Math.max(12, tamanoCelda / 2)));
+        String textoDelRadar = "ESCANEANDO...";
+        FontMetrics medidasDeLaFuente = graficos.getFontMetrics();
+        graficos.drawString(textoDelRadar, centroX - medidasDeLaFuente.stringWidth(textoDelRadar) / 2, margenSuperior + tamanoDelTableroEnPixeles + 20);
     }
 }

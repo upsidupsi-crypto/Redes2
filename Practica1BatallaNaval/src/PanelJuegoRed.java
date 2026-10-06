@@ -4,39 +4,6 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 
-/**
- * Versión "en red" de PanelJuego: la interfaz es casi idéntica (misma
- * colocación de barcos, mismo radar, mismas explosiones), pero el
- * rival ya NO se simula localmente: cada disparo viaja de verdad por
- * el socket hacia Servidor.java, usando Cliente.
- *
- * CONCURRENCIA (la parte "avanzada" de este archivo, vale la pena
- * estudiarla si se va a explicar):
- *
- * - Todo lo que hace Cliente (disparar, esperarDisparoEnemigo, etc.)
- *   BLOQUEA el hilo que lo llama. Si lo llamáramos desde el hilo de
- *   Swing (el "Event Dispatch Thread" o EDT), toda la ventana se
- *   congelaría mientras se espera la red. Por eso toda la conversación
- *   de red vive en un hilo propio: hiloRed (ver bucleRed()).
- *
- * - Pero solo el hilo de Swing puede tocar los componentes gráficos.
- *   Entonces cada vez que hiloRed necesita actualizar algo visual,
- *   usa SwingUtilities.invokeLater(...) para pedirle al hilo de Swing
- *   que lo haga.
- *
- * - Dos problemas de sincronización que eso crea, y cómo se resolvieron:
- *     1) "¿A qué casilla disparó el usuario?" - hiloRed necesita
- *        esperar un clic que ocurre en el hilo de Swing. Se resuelve
- *        con una BlockingQueue: el clic hace colaClicsUsuario.offer(),
- *        y hiloRed hace colaClicsUsuario.take() (que bloquea hasta que
- *        haya algo).
- *     2) "Espera a que termine la animación del radar antes de seguir
- *        jugando" - hiloRed dispara la animación (en el hilo de Swing)
- *        y necesita esperar a que termine antes de pedir el siguiente
- *        disparo. Se resuelve con un CountDownLatch: hiloRed hace
- *        latch.await() y el callback del radar (que corre en el hilo
- *        de Swing) hace latch.countDown() cuando termina.
- */
 public class PanelJuegoRed extends PanelBase {
 
     private static final Color RADAR_JUGADOR = new Color(60, 230, 110);
@@ -67,13 +34,9 @@ public class PanelJuegoRed extends PanelBase {
 
     private Fase faseActual = Fase.COLOCACION;
 
-    // la cola por la que el clic del usuario (hilo de Swing) le avisa
-    // a hiloRed (hilo aparte) a qué casilla disparar
     private final BlockingQueue<int[]> colaClicsUsuario = new LinkedBlockingQueue<>();
     private Thread hiloRed;
 
-    // true cuando la partida se abandona o termina; evita que el hilo
-    // de red siga trabajando o que un Timer pendiente haga algo después.
     private volatile boolean detenido = false;
 
     public PanelJuegoRed(Cliente cliente, Runnable alVolverMenu) {
@@ -88,8 +51,8 @@ public class PanelJuegoRed extends PanelBase {
         panelCentral.add(construirVistaBatalla(), "batalla");
         add(panelCentral, BorderLayout.CENTER);
 
-        panelColocacion.setOyente((fila, col) -> intentarColocar(fila, col));
-        panelEnemigo.setOyente((fila, col) -> onClicEnemigo(fila, col));
+        panelColocacion.setOyenteDeCasilla((fila, col) -> intentarColocar(fila, col));
+        panelEnemigo.setOyenteDeCasilla((fila, col) -> onClicEnemigo(fila, col));
         panelColocacion.setInteractivo(true);
         panelPropio.setInteractivo(false);
         panelEnemigo.setInteractivo(false);
@@ -97,8 +60,6 @@ public class PanelJuegoRed extends PanelBase {
         actualizarEtiquetaColocacion();
         actualizarVistas();
     }
-
-    // ---------- Construcción de la interfaz (igual que en PanelJuego) ----------
 
     private JPanel construirBarraSuperior() {
         JPanel barra = new JPanel(new BorderLayout());
@@ -145,7 +106,7 @@ public class PanelJuegoRed extends PanelBase {
         JButton botonAleatorio = new JButton("Colocación aleatoria");
         botonAleatorio.addActionListener(e -> {
             jugador = new LogicaBarcos();
-            jugador.colocarBarcosAleatorio();
+            jugador.colocarFlotaAleatoria();
             indicePendiente = tipos.length;
             Sonido.reproducir("colocar");
             actualizarVistas();
@@ -188,8 +149,6 @@ public class PanelJuegoRed extends PanelBase {
         return contenedor;
     }
 
-    // ---------- Utilidad: ejecutar algo después de un retraso, en el hilo de Swing ----------
-
     private void retrasar(int milisegundos, Runnable accion) {
         Timer t = new Timer(milisegundos, e -> {
             if (!detenido) accion.run();
@@ -197,8 +156,6 @@ public class PanelJuegoRed extends PanelBase {
         t.setRepeats(false);
         t.start();
     }
-
-    // ---------- Colocación de barcos (igual que en PanelJuego) ----------
 
     private void actualizarEtiquetaColocacion() {
         if (indicePendiente >= tipos.length) {
@@ -225,8 +182,6 @@ public class PanelJuegoRed extends PanelBase {
         }
     }
 
-    // ---------- Arranque de la partida en red ----------
-
     private void iniciarBatalla() {
         faseActual = Fase.BATALLA;
         cardLayout.show(panelCentral, "batalla");
@@ -239,10 +194,6 @@ public class PanelJuegoRed extends PanelBase {
         hiloRed.start();
     }
 
-    // ======================================================================
-    //  Todo lo de aquí abajo (hasta el siguiente comentario grande) corre
-    //  en hiloRed, NUNCA en el hilo de Swing.
-    // ======================================================================
 
     private void bucleRed() {
         try {
@@ -267,7 +218,6 @@ public class PanelJuegoRed extends PanelBase {
         }
     }
 
-    /** Nuestro turno: esperamos un clic del usuario y lo mandamos por la red. */
     private boolean turnoDelCliente() throws Exception {
         int disparos = 0;
         boolean fallo = false;
@@ -275,14 +225,14 @@ public class PanelJuegoRed extends PanelBase {
 
         while (disparos < 3 && !fallo && !fin) {
             habilitarClicEnemigo();
-            int[] casilla = colaClicsUsuario.take(); // bloquea hasta que el usuario haga clic
+            int[] casilla = colaClicsUsuario.take();
 
             Mensaje respuesta = cliente.disparar(casilla[0], casilla[1]);
             String resultado = respuesta.getTexto();
-            if ("REPETIDO".equals(resultado)) continue; // no debería pasar, pero no gasta turno
+            if ("REPETIDO".equals(resultado)) continue;
 
-            jugador.registrarResultadoTiro(casilla[0], casilla[1], resultado);
-            boolean rivalPerdio = respuesta.isFin();
+            jugador.registrarResultadoDisparo(casilla[0], casilla[1], resultado);
+            boolean rivalPerdio = respuesta.isFinDeJuego();
 
             mostrarDisparoPropioEnGUI(casilla[0], casilla[1], resultado, rivalPerdio);
 
@@ -295,20 +245,19 @@ public class PanelJuegoRed extends PanelBase {
         return fin;
     }
 
-    /** Turno del rival: esperamos a que nos disparen y contestamos con el resultado real. */
     private boolean turnoDelServidor() throws Exception {
         int disparos = 0;
         boolean fallo = false;
         boolean fin = false;
 
         while (disparos < 3 && !fallo && !fin) {
-            Mensaje disparo = cliente.esperarDisparoEnemigo(); // bloquea hasta que llega
+            Mensaje disparo = cliente.esperarDisparoDelServidor();
             int fila = disparo.getFila();
-            int col = disparo.getCol();
+            int col = disparo.getColumna();
 
             String resultado = jugador.recibirDisparo(fila, col);
-            boolean yoPerdi = jugador.todosHundidos();
-            cliente.enviarResultado(resultado, yoPerdi);
+            boolean yoPerdi = jugador.todosLosBarcosHundidos();
+            cliente.enviarResultado(resultado, yoPerdi, null);
 
             mostrarDisparoEnemigoEnGUI(fila, col, resultado, yoPerdi);
 
@@ -329,7 +278,6 @@ public class PanelJuegoRed extends PanelBase {
         SwingUtilities.invokeLater(() -> etiquetaEstado.setText(texto));
     }
 
-    /** Muestra en la GUI un disparo que NOSOTROS hicimos, y bloquea hiloRed hasta que la animación termina. */
     private void mostrarDisparoPropioEnGUI(int fila, int col, String resultado, boolean finDeJuego) throws InterruptedException {
         CountDownLatch listo = new CountDownLatch(1);
         SwingUtilities.invokeLater(() -> {
@@ -345,7 +293,6 @@ public class PanelJuegoRed extends PanelBase {
         listo.await();
     }
 
-    /** Muestra en la GUI un disparo que el RIVAL nos hizo, y bloquea hiloRed hasta que la animación termina. */
     private void mostrarDisparoEnemigoEnGUI(int fila, int col, String resultado, boolean finDeJuego) throws InterruptedException {
         CountDownLatch listo = new CountDownLatch(1);
         SwingUtilities.invokeLater(() -> {
@@ -361,22 +308,17 @@ public class PanelJuegoRed extends PanelBase {
         listo.await();
     }
 
-    // ======================================================================
-    //  De aquí para abajo, todo corre otra vez en el hilo de Swing (son
-    //  llamadas desde dentro de los invokeLater de arriba).
-    // ======================================================================
-
     private void agregarEfectoYSonido(PanelTablero panel, int fila, int col, String resultado) {
-        PanelTablero.TipoEfecto tipo;
+        int tipo;
         String sonido;
         if ("AGUA".equals(resultado)) {
-            tipo = PanelTablero.TipoEfecto.SPLASH;
+            tipo = PanelTablero.EFECTO_SPLASH;
             sonido = "splash";
         } else if ("HUNDIDO".equals(resultado)) {
-            tipo = PanelTablero.TipoEfecto.EXPLOSION_GRANDE;
+            tipo = PanelTablero.EFECTO_EXPLOSION_GRANDE;
             sonido = "explosion_grande";
         } else {
-            tipo = PanelTablero.TipoEfecto.EXPLOSION;
+            tipo = PanelTablero.EFECTO_EXPLOSION;
             sonido = "explosion";
         }
         panel.agregarEfecto(tipo, fila, col);
@@ -407,9 +349,8 @@ public class PanelJuegoRed extends PanelBase {
         });
     }
 
-    /** Clic del usuario sobre el tablero enemigo: solo encola la casilla, hiloRed hace el resto. */
     private void onClicEnemigo(int fila, int col) {
-        if (jugador.getTableroTiro()[fila][col] != LogicaBarcos.AGUA) {
+        if (jugador.getTableroDeTiro()[fila][col] != LogicaBarcos.CASILLA_AGUA) {
             etiquetaEstado.setText("Ya disparaste en esa casilla.");
             return;
         }
@@ -418,17 +359,13 @@ public class PanelJuegoRed extends PanelBase {
     }
 
     private void actualizarVistas() {
-        // en red no conocemos los barcos reales del rival (el servidor no los
-        // revela), así que el tablero enemigo nunca dibuja siluetas completas,
-        // solo las marcas de agua/tocado/hundido en cada casilla.
-        panelEnemigo.actualizar(jugador.getTableroTiro(), java.util.Collections.emptyList());
-        panelPropio.actualizar(jugador.getTableroPropio(), jugador.getMisBarcos());
-        panelColocacion.actualizar(jugador.getTableroPropio(), jugador.getMisBarcos());
+        panelEnemigo.actualizar(jugador.copiarTableroDeTiro(), java.util.Collections.emptyList());
+        panelPropio.actualizar(jugador.getTableroPropio(), jugador.getBarcosPropios());
+        panelColocacion.actualizar(jugador.getTableroPropio(), jugador.getBarcosPropios());
     }
 
     @Override
     protected void dibujarContenido(Graphics2D g2) {
-        // el fondo de agua ya lo pinta PanelBase; el resto son componentes Swing
     }
 
     @Override

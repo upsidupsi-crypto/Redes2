@@ -1,50 +1,93 @@
 import java.io.Serializable;
 
-/**
- * Un solo tipo de mensaje "genérico" para no tener que crear una clase
- * distinta por cada mensaje del protocolo. El campo "tipo" indica qué
- * significa el mensaje, y los demás campos se llenan según el tipo:
- *
- *   NOMBRE     -> texto = nombre del jugador
- *   INICIO     -> (sin datos extra)
- *   LISTO      -> (sin datos extra)
- *   TURNO      -> texto = "CLIENTE" o "SERVIDOR"
- *   DISPARO    -> fila, col
- *   RESULTADO  -> texto = "AGUA" | "TOCADO" | "HUNDIDO" | "REPETIDO", fin = true/false
- */
 public class Mensaje implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
+    public static final String TIPO_NOMBRE = "NOMBRE";
+    public static final String TIPO_INICIO = "INICIO";
+    public static final String TIPO_LISTO = "LISTO";
+    public static final String TIPO_TURNO = "TURNO";
+    public static final String TIPO_DISPARO = "DISPARO";
+    public static final String TIPO_RESULTADO = "RESULTADO";
+    public static final String TIPO_OCUPADO = "OCUPADO";
+
+    public static final String TURNO_CLIENTE = "CLIENTE";
+    public static final String TURNO_SERVIDOR = "SERVIDOR";
+
     private String tipo;
     private String texto;
     private int fila;
-    private int col;
-    private boolean fin;
-
-    public Mensaje() { }
+    private int columna;
+    private boolean finDeJuego;
+    private String nombreBarcoHundido;
+    private int longitudBarcoHundido;
+    private int filaInicialBarcoHundido;
+    private int columnaInicialBarcoHundido;
+    private boolean barcoHundidoHorizontal;
 
     public Mensaje(String tipo) {
         this.tipo = tipo;
     }
 
-    public String getTipo() { return tipo; }
-    public void setTipo(String tipo) { this.tipo = tipo; }
+    public void agregarBarcoHundido(LogicaBarcos.Barco barcoHundido) {
+        nombreBarcoHundido = barcoHundido.getNombre();
+        longitudBarcoHundido = barcoHundido.getLongitud();
+        filaInicialBarcoHundido = barcoHundido.getFilaInicial();
+        columnaInicialBarcoHundido = barcoHundido.getColumnaInicial();
+        barcoHundidoHorizontal = barcoHundido.isHorizontal();
+    }
 
-    public String getTexto() { return texto; }
-    public void setTexto(String texto) { this.texto = texto; }
+    public boolean tieneBarcoHundido() {
+        return nombreBarcoHundido != null;
+    }
 
-    public int getFila() { return fila; }
-    public void setFila(int fila) { this.fila = fila; }
+    public LogicaBarcos.Barco obtenerBarcoHundido() {
+        return new LogicaBarcos.Barco(nombreBarcoHundido, longitudBarcoHundido,
+                filaInicialBarcoHundido, columnaInicialBarcoHundido, barcoHundidoHorizontal);
+    }
 
-    public int getCol() { return col; }
-    public void setCol(int col) { this.col = col; }
+    public String getTipo() {
+        return tipo;
+    }
 
-    public boolean isFin() { return fin; }
-    public void setFin(boolean fin) { this.fin = fin; }
+    public void setTipo(String tipo) {
+        this.tipo = tipo;
+    }
 
-    @Override
-    public String toString() {
-        return "Mensaje{tipo=" + tipo + ", texto=" + texto + ", fila=" + fila + ", col=" + col + ", fin=" + fin + "}";
+    public String getTexto() {
+        return texto;
+    }
+
+    public void setTexto(String texto) {
+        this.texto = texto;
+    }
+
+    public int getFila() {
+        return fila;
+    }
+
+    public void setFila(int fila) {
+        this.fila = fila;
+    }
+
+    public int getColumna() {
+        return columna;
+    }
+
+    public void setColumna(int columna) {
+        this.columna = columna;
+    }
+
+    public boolean isFinDeJuego() {
+        return finDeJuego;
+    }
+
+    public void setFinDeJuego(boolean finDeJuego) {
+        this.finDeJuego = finDeJuego;
+    }
+
+    public String getNombreBarcoHundido() {
+        return nombreBarcoHundido;
     }
 }

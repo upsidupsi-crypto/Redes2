@@ -1,90 +1,102 @@
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 
-/**
- * Capa de red del lado del cliente. Abre el socket y habla el mismo
- * protocolo de Mensaje que ya usa Servidor.java (NOMBRE/INICIO/LISTO/
- * TURNO/DISPARO/RESULTADO). No sabe nada de Swing ni de LogicaBarcos:
- * solo manda y recibe Mensaje.
- *
- * IMPORTANTE: cada método público de aquí que espera una respuesta del
- * servidor (enviarNombreYEsperarInicio, enviarListoYEsperarTurno,
- * disparar, esperarDisparoEnemigo) BLOQUEA el hilo que lo llama hasta
- * que el dato llega. Por eso PanelJuegoRed los usa siempre desde un
- * hilo aparte (nunca desde el hilo de Swing), igual que el Servidor
- * procesa un jugador a la vez de forma bloqueante.
- */
 public class Cliente {
 
+    private static final int TIEMPO_ESPERA_CONEXION_MILISEGUNDOS = 5000;
+
     private final Socket socket;
-    private final ObjectOutputStream salida;
-    private final ObjectInputStream entrada;
+    private final ObjectOutputStream flujoSalida;
+    private final ObjectInputStream flujoEntrada;
 
-    public Cliente(String host, int puerto) throws IOException {
-        socket = new Socket(host, puerto);
-
-        // Mismo orden obligatorio que en Servidor.java: el
-        // ObjectOutputStream se crea (y hace flush) ANTES que el
-        // ObjectInputStream, en ambos extremos.
-        salida = new ObjectOutputStream(socket.getOutputStream());
-        salida.flush();
-        entrada = new ObjectInputStream(socket.getInputStream());
+    public Cliente(String direccionServidor, int puertoServidor) throws IOException {
+        socket = new Socket();
+        try {
+            socket.connect(new InetSocketAddress(direccionServidor, puertoServidor), TIEMPO_ESPERA_CONEXION_MILISEGUNDOS);
+            socket.setSoTimeout(TIEMPO_ESPERA_CONEXION_MILISEGUNDOS);
+            flujoSalida = new ObjectOutputStream(socket.getOutputStream());
+            flujoSalida.flush();
+            flujoEntrada = new ObjectInputStream(socket.getInputStream());
+        } catch (IOException excepcion) {
+            socket.close();
+            throw excepcion;
+        }
     }
 
-    private void enviar(Mensaje m) throws IOException {
-        salida.writeObject(m);
-        salida.flush();
-        salida.reset();
+    private void enviar(Mensaje mensaje) throws IOException {
+        flujoSalida.writeObject(mensaje);
+        flujoSalida.flush();
+        flujoSalida.reset();
     }
 
-    private Mensaje recibir() throws IOException, ClassNotFoundException {
-        return (Mensaje) entrada.readObject();
+    private Mensaje recibirMensajeDeTipo(String tipoEsperado) throws IOException, ClassNotFoundException {
+        Object objetoRecibido = flujoEntrada.readObject();
+        if (!(objetoRecibido instanceof Mensaje)) {
+            throw new IOException("Se recibio un objeto que no es un Mensaje");
+        }
+        Mensaje mensajeRecibido = (Mensaje) objetoRecibido;
+        if (!tipoEsperado.equals(mensajeRecibido.getTipo())) {
+            throw new IOException("Se esperaba un mensaje " + tipoEsperado + " y llego " + mensajeRecibido.getTipo());
+        }
+        return mensajeRecibido;
     }
 
-    /** Manda el nombre del jugador y bloquea hasta que llega el mensaje INICIO. */
-    public void enviarNombreYEsperarInicio(String nombre) throws IOException, ClassNotFoundException {
-        Mensaje m = new Mensaje("NOMBRE");
-        m.setTexto(nombre);
-        enviar(m);
-        recibir(); // INICIO
+    public void enviarNombreYEsperarInicio(String nombreJugador) throws IOException, ClassNotFoundException {
+        Mensaje mensajeNombre = new Mensaje(Mensaje.TIPO_NOMBRE);
+        mensajeNombre.setTexto(nombreJugador);
+        enviar(mensajeNombre);
+
+        Object objetoRecibido = flujoEntrada.readObject();
+        if (!(objetoRecibido instanceof Mensaje)) {
+            throw new IOException("El servidor respondio con datos desconocidos");
+        }
+        Mensaje respuesta = (Mensaje) objetoRecibido;
+
+        if (Mensaje.TIPO_OCUPADO.equals(respuesta.getTipo())) {
+            throw new IOException("El servidor ya tiene una partida en curso con otro jugador.");
+        }
+        if (!Mensaje.TIPO_INICIO.equals(respuesta.getTipo())) {
+            throw new IOException("El servidor respondio con un mensaje inesperado: " + respuesta.getTipo());
+        }
+        socket.setSoTimeout(0);
     }
 
-    /** Avisa que ya se colocó la flota y retorna si el turno inicial es del cliente. */
     public boolean enviarListoYEsperarTurno() throws IOException, ClassNotFoundException {
-        enviar(new Mensaje("LISTO"));
-        Mensaje turno = recibir(); // TURNO
-        return "CLIENTE".equals(turno.getTexto());
+        enviar(new Mensaje(Mensaje.TIPO_LISTO));
+        Mensaje mensajeTurno = recibirMensajeDeTipo(Mensaje.TIPO_TURNO);
+        return Mensaje.TURNO_CLIENTE.equals(mensajeTurno.getTexto());
     }
 
-    /** Envía un disparo propio y bloquea hasta recibir el resultado. */
-    public Mensaje disparar(int fila, int col) throws IOException, ClassNotFoundException {
-        Mensaje m = new Mensaje("DISPARO");
-        m.setFila(fila);
-        m.setCol(col);
-        enviar(m);
-        return recibir(); // RESULTADO
+    public Mensaje disparar(int fila, int columna) throws IOException, ClassNotFoundException {
+        Mensaje mensajeDisparo = new Mensaje(Mensaje.TIPO_DISPARO);
+        mensajeDisparo.setFila(fila);
+        mensajeDisparo.setColumna(columna);
+        enviar(mensajeDisparo);
+        return recibirMensajeDeTipo(Mensaje.TIPO_RESULTADO);
     }
 
-    /** Bloquea hasta que el servidor dispare sobre nuestro tablero. */
-    public Mensaje esperarDisparoEnemigo() throws IOException, ClassNotFoundException {
-        return recibir(); // DISPARO
+    public Mensaje esperarDisparoDelServidor() throws IOException, ClassNotFoundException {
+        return recibirMensajeDeTipo(Mensaje.TIPO_DISPARO);
     }
 
-    /** Responde el disparo recibido con el resultado calculado en nuestro propio tablero. */
-    public void enviarResultado(String resultado, boolean finDeJuego) throws IOException {
-        Mensaje m = new Mensaje("RESULTADO");
-        m.setTexto(resultado);
-        m.setFin(finDeJuego);
-        enviar(m);
+    public void enviarResultado(String resultado, boolean finDeJuego, LogicaBarcos.Barco barcoHundido) throws IOException {
+        Mensaje mensajeResultado = new Mensaje(Mensaje.TIPO_RESULTADO);
+        mensajeResultado.setTexto(resultado);
+        mensajeResultado.setFinDeJuego(finDeJuego);
+        if (barcoHundido != null) {
+            mensajeResultado.agregarBarcoHundido(barcoHundido);
+        }
+        enviar(mensajeResultado);
     }
 
     public void cerrar() {
         try {
             socket.close();
-        } catch (IOException ignorado) {
-            // ya se está cerrando todo, no hay nada que hacer con este error
+        } catch (IOException excepcion) {
+            System.out.println("No se pudo cerrar la conexion: " + excepcion.getMessage());
         }
     }
 }
