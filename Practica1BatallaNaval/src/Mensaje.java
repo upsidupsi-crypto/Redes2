@@ -10,7 +10,6 @@ public class Mensaje implements Serializable {
     public static final String TIPO_TURNO = "TURNO";
     public static final String TIPO_DISPARO = "DISPARO";
     public static final String TIPO_RESULTADO = "RESULTADO";
-    public static final String TIPO_OCUPADO = "OCUPADO";
 
     public static final String TURNO_CLIENTE = "CLIENTE";
     public static final String TURNO_SERVIDOR = "SERVIDOR";

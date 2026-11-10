@@ -54,10 +54,6 @@ public class Cliente {
             throw new IOException("El servidor respondio con datos desconocidos");
         }
         Mensaje respuesta = (Mensaje) objetoRecibido;
-
-        if (Mensaje.TIPO_OCUPADO.equals(respuesta.getTipo())) {
-            throw new IOException("El servidor ya tiene una partida en curso con otro jugador.");
-        }
         if (!Mensaje.TIPO_INICIO.equals(respuesta.getTipo())) {
             throw new IOException("El servidor respondio con un mensaje inesperado: " + respuesta.getTipo());
         }

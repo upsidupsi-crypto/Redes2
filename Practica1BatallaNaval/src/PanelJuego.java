@@ -1,22 +1,17 @@
-import javax.swing.BorderFactory;
-import javax.swing.Box;
-import javax.swing.BoxLayout;
-import javax.swing.JButton;
-import javax.swing.JComponent;
-import javax.swing.JLabel;
-import javax.swing.JOptionPane;
-import javax.swing.JPanel;
-import javax.swing.SwingConstants;
-import javax.swing.SwingUtilities;
-import java.awt.BorderLayout;
-import java.awt.CardLayout;
-import java.awt.Color;
-import java.awt.Component;
-import java.awt.Font;
-import java.awt.Graphics2D;
-import java.awt.GridLayout;
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
+import javafx.application.Platform;
+import javafx.geometry.Insets;
+import javafx.geometry.Pos;
+import javafx.scene.control.Alert;
+import javafx.scene.control.Button;
+import javafx.scene.control.Label;
+import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.HBox;
+import javafx.scene.layout.StackPane;
+import javafx.scene.layout.VBox;
+import javafx.scene.paint.Color;
+import javafx.scene.text.Font;
+import javafx.scene.text.FontWeight;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -24,17 +19,14 @@ import java.util.concurrent.Semaphore;
 
 public class PanelJuego extends PanelBase {
 
-    private static final Color COLOR_RADAR_JUGADOR = new Color(60, 230, 110);
-    private static final Color COLOR_RADAR_SERVIDOR = new Color(230, 70, 70);
+    private static final Color COLOR_RADAR_JUGADOR = Color.web("#3ce66e");
+    private static final Color COLOR_RADAR_SERVIDOR = Color.web("#e64646");
 
     private static final int FASE_COLOCACION = 0;
     private static final int FASE_BATALLA = 1;
     private static final int FASE_TERMINADA = 2;
 
     private static final int PAUSA_ANTES_DEL_MENSAJE_FINAL_MILISEGUNDOS = 1400;
-
-    private static final String PANTALLA_COLOCACION = "colocacion";
-    private static final String PANTALLA_BATALLA = "batalla";
 
     private final Cliente cliente;
     private final Runnable accionVolverAlMenu;
@@ -44,12 +36,13 @@ public class PanelJuego extends PanelBase {
     private final PanelTablero panelDeFlotaPropia = new PanelTablero();
     private final PanelTablero panelDeTableroEnemigo = new PanelTablero();
 
-    private final JLabel etiquetaDeEstado = new JLabel("Coloca tus barcos", SwingConstants.CENTER);
-    private final JLabel etiquetaDeColocacion = new JLabel("", SwingConstants.CENTER);
-    private final JButton botonComenzarBatalla = new JButton("Comenzar batalla");
+    private final Label etiquetaDeEstado = new Label("Coloca tus barcos");
+    private final Label etiquetaDeColocacion = new Label("");
+    private final Button botonComenzarBatalla = new Button("Comenzar batalla");
 
-    private final CardLayout administradorDePantallas = new CardLayout();
-    private final JPanel panelCentral = new JPanel(administradorDePantallas);
+    private final StackPane panelCentral = new StackPane();
+    private final VBox vistaDeColocacion;
+    private final HBox vistaDeBatalla;
 
     private int indiceBarcoPendiente;
     private boolean orientacionHorizontal;
@@ -72,25 +65,24 @@ public class PanelJuego extends PanelBase {
         this.faseActual = FASE_COLOCACION;
         this.partidaDetenida = false;
 
-        setLayout(new BorderLayout());
+        // Estructura principal encima del canvas animado de PanelBase
+        BorderPane layoutPrincipal = new BorderPane();
+        layoutPrincipal.setTop(construirBarraSuperior());
 
-        add(construirBarraSuperior(), BorderLayout.NORTH);
+        vistaDeColocacion = construirVistaDeColocacion();
+        vistaDeBatalla = construirVistaDeBatalla();
 
-        panelCentral.setOpaque(false);
-        panelCentral.add(construirVistaDeColocacion(), PANTALLA_COLOCACION);
-        panelCentral.add(construirVistaDeBatalla(), PANTALLA_BATALLA);
-        add(panelCentral, BorderLayout.CENTER);
+        vistaDeBatalla.setVisible(false); // Inicialmente oculta
 
-        panelDeColocacion.setOyenteDeCasilla(new PanelTablero.OyenteDeCasilla() {
-            public void alSeleccionarCasilla(int fila, int columna) {
-                alSeleccionarCasillaDeColocacion(fila, columna);
-            }
-        });
-        panelDeTableroEnemigo.setOyenteDeCasilla(new PanelTablero.OyenteDeCasilla() {
-            public void alSeleccionarCasilla(int fila, int columna) {
-                alSeleccionarCasillaEnemiga(fila, columna);
-            }
-        });
+        panelCentral.getChildren().addAll(vistaDeColocacion, vistaDeBatalla);
+        layoutPrincipal.setCenter(panelCentral);
+
+        getChildren().add(layoutPrincipal);
+
+        // Configuración de eventos en tableros
+        panelDeColocacion.setOyenteDeCasilla(this::alSeleccionarCasillaDeColocacion);
+        panelDeTableroEnemigo.setOyenteDeCasilla(this::alSeleccionarCasillaEnemiga);
+
         panelDeColocacion.setInteractivo(true);
         panelDeFlotaPropia.setInteractivo(false);
         panelDeTableroEnemigo.setInteractivo(false);
@@ -99,114 +91,107 @@ public class PanelJuego extends PanelBase {
         actualizarTablerosDeColocacion();
     }
 
-    private JPanel construirBarraSuperior() {
-        JPanel barraSuperior = new JPanel(new BorderLayout());
-        barraSuperior.setOpaque(false);
-        barraSuperior.setBorder(BorderFactory.createEmptyBorder(10, 16, 10, 16));
+    private BorderPane construirBarraSuperior() {
+        BorderPane barraSuperior = new BorderPane();
+        barraSuperior.setPadding(new Insets(10, 16, 10, 16));
 
-        etiquetaDeEstado.setFont(new Font("SansSerif", Font.BOLD, 20));
-        etiquetaDeEstado.setForeground(Color.WHITE);
+        etiquetaDeEstado.setFont(Font.font("SansSerif", FontWeight.BOLD, 20));
+        etiquetaDeEstado.setTextFill(Color.WHITE);
 
-        JButton botonMenu = new JButton("\u2190 Menú");
-        botonMenu.setFocusPainted(false);
-        botonMenu.addActionListener(new ActionListener() {
-            public void actionPerformed(ActionEvent evento) {
-                detener();
-                accionVolverAlMenu.run();
-            }
+        Button botonMenu = new Button("← Menú");
+        botonMenu.setStyle("-fx-font-size: 14px; -fx-cursor: hand;");
+        botonMenu.setFocusTraversable(false);
+        botonMenu.setOnAction(evento -> {
+            detener();
+            accionVolverAlMenu.run();
         });
 
-        barraSuperior.add(botonMenu, BorderLayout.WEST);
-        barraSuperior.add(etiquetaDeEstado, BorderLayout.CENTER);
+        barraSuperior.setLeft(botonMenu);
+        barraSuperior.setCenter(etiquetaDeEstado);
+        BorderPane.setAlignment(etiquetaDeEstado, Pos.CENTER);
         return barraSuperior;
     }
 
-    private JPanel construirVistaDeColocacion() {
-        JPanel vistaDeColocacion = new JPanel(new BorderLayout());
-        vistaDeColocacion.setOpaque(false);
-        vistaDeColocacion.add(panelDeColocacion, BorderLayout.CENTER);
+    private VBox construirVistaDeColocacion() {
+        VBox contenedor = new VBox(10);
+        contenedor.setAlignment(Pos.CENTER);
 
-        JPanel panelDeControles = new JPanel();
-        panelDeControles.setOpaque(false);
-        panelDeControles.setLayout(new BoxLayout(panelDeControles, BoxLayout.Y_AXIS));
+        etiquetaDeColocacion.setTextFill(Color.WHITE);
+        etiquetaDeColocacion.setFont(Font.font("SansSerif", 15));
 
-        etiquetaDeColocacion.setForeground(Color.WHITE);
-        etiquetaDeColocacion.setFont(new Font("SansSerif", Font.PLAIN, 15));
-        etiquetaDeColocacion.setAlignmentX(Component.CENTER_ALIGNMENT);
+        HBox filaDeBotones = new HBox(10);
+        filaDeBotones.setAlignment(Pos.CENTER);
 
-        JPanel filaDeBotones = new JPanel();
-        filaDeBotones.setOpaque(false);
-
-        JButton botonGirar = new JButton("Girar orientación");
-        botonGirar.addActionListener(new ActionListener() {
-            public void actionPerformed(ActionEvent evento) {
-                orientacionHorizontal = !orientacionHorizontal;
-                actualizarTextoDeColocacion();
-            }
+        Button botonGirar = new Button("Girar orientación");
+        botonGirar.setStyle("-fx-cursor: hand;");
+        botonGirar.setOnAction(evento -> {
+            orientacionHorizontal = !orientacionHorizontal;
+            actualizarTextoDeColocacion();
         });
 
-        JButton botonColocacionAleatoria = new JButton("Colocación aleatoria");
-        botonColocacionAleatoria.addActionListener(new ActionListener() {
-            public void actionPerformed(ActionEvent evento) {
-                logicaJugador = new LogicaBarcos();
-                logicaJugador.colocarFlotaAleatoria();
-                indiceBarcoPendiente = LogicaBarcos.LONGITUDES_BARCOS.length;
-                Sonido.reproducir("colocar");
-                actualizarTablerosDeColocacion();
-                actualizarTextoDeColocacion();
-                botonComenzarBatalla.setEnabled(true);
-            }
+        Button botonColocacionAleatoria = new Button("Colocación aleatoria");
+        botonColocacionAleatoria.setStyle("-fx-cursor: hand;");
+        botonColocacionAleatoria.setOnAction(evento -> {
+            logicaJugador = new LogicaBarcos();
+            logicaJugador.colocarFlotaAleatoria();
+            indiceBarcoPendiente = LogicaBarcos.LONGITUDES_BARCOS.length;
+            Sonido.reproducir("colocar");
+            actualizarTablerosDeColocacion();
+            actualizarTextoDeColocacion();
+            botonComenzarBatalla.setDisable(false);
         });
 
-        JButton botonReiniciarColocacion = new JButton("Reiniciar colocación");
-        botonReiniciarColocacion.addActionListener(new ActionListener() {
-            public void actionPerformed(ActionEvent evento) {
-                logicaJugador = new LogicaBarcos();
-                indiceBarcoPendiente = 0;
-                Sonido.reproducir("click");
-                actualizarTablerosDeColocacion();
-                actualizarTextoDeColocacion();
-                botonComenzarBatalla.setEnabled(false);
-            }
+        Button botonReiniciarColocacion = new Button("Reiniciar colocación");
+        botonReiniciarColocacion.setStyle("-fx-cursor: hand;");
+        botonReiniciarColocacion.setOnAction(evento -> {
+            logicaJugador = new LogicaBarcos();
+            indiceBarcoPendiente = 0;
+            Sonido.reproducir("click");
+            actualizarTablerosDeColocacion();
+            actualizarTextoDeColocacion();
+            botonComenzarBatalla.setDisable(true);
         });
 
-        botonComenzarBatalla.setEnabled(false);
-        botonComenzarBatalla.addActionListener(new ActionListener() {
-            public void actionPerformed(ActionEvent evento) {
-                iniciarBatalla();
-            }
-        });
+        botonComenzarBatalla.setDisable(true);
+        botonComenzarBatalla.setStyle("-fx-cursor: hand; -fx-font-weight: bold;");
+        botonComenzarBatalla.setOnAction(evento -> iniciarBatalla());
 
-        filaDeBotones.add(botonGirar);
-        filaDeBotones.add(botonColocacionAleatoria);
-        filaDeBotones.add(botonReiniciarColocacion);
-        filaDeBotones.add(botonComenzarBatalla);
+        filaDeBotones.getChildren().addAll(botonGirar, botonColocacionAleatoria, botonReiniciarColocacion, botonComenzarBatalla);
 
-        panelDeControles.add(etiquetaDeColocacion);
-        panelDeControles.add(Box.createVerticalStrut(8));
-        panelDeControles.add(filaDeBotones);
+        VBox controles = new VBox(8);
+        controles.setAlignment(Pos.CENTER);
+        controles.setPadding(new Insets(10));
+        controles.getChildren().addAll(etiquetaDeColocacion, filaDeBotones);
 
-        vistaDeColocacion.add(panelDeControles, BorderLayout.SOUTH);
-        return vistaDeColocacion;
+        contenedor.getChildren().addAll(panelDeColocacion, controles);
+        VBox.setVgrow(panelDeColocacion, javafx.scene.layout.Priority.ALWAYS);
+        return contenedor;
     }
 
-    private JPanel construirVistaDeBatalla() {
-        JPanel vistaDeBatalla = new JPanel(new GridLayout(1, 2, 10, 0));
-        vistaDeBatalla.setOpaque(false);
-        vistaDeBatalla.setBorder(BorderFactory.createEmptyBorder(0, 10, 10, 10));
-        vistaDeBatalla.add(envolverConTitulo(panelDeFlotaPropia, "Tu flota"));
-        vistaDeBatalla.add(envolverConTitulo(panelDeTableroEnemigo, "Tablero enemigo"));
-        return vistaDeBatalla;
+    private HBox construirVistaDeBatalla() {
+        HBox contenedor = new HBox(15);
+        contenedor.setAlignment(Pos.CENTER);
+        contenedor.setPadding(new Insets(0, 10, 10, 10));
+
+        VBox cajaFlotaPropia = envolverConTitulo(panelDeFlotaPropia, "Tu flota");
+        VBox cajaTableroEnemigo = envolverConTitulo(panelDeTableroEnemigo, "Tablero enemigo");
+
+        HBox.setHgrow(cajaFlotaPropia, javafx.scene.layout.Priority.ALWAYS);
+        HBox.setHgrow(cajaTableroEnemigo, javafx.scene.layout.Priority.ALWAYS);
+
+        contenedor.getChildren().addAll(cajaFlotaPropia, cajaTableroEnemigo);
+        return contenedor;
     }
 
-    private JPanel envolverConTitulo(JComponent componente, String titulo) {
-        JPanel contenedor = new JPanel(new BorderLayout());
-        contenedor.setOpaque(false);
-        JLabel etiquetaDeTitulo = new JLabel(titulo, SwingConstants.CENTER);
-        etiquetaDeTitulo.setForeground(Color.WHITE);
-        etiquetaDeTitulo.setFont(new Font("SansSerif", Font.BOLD, 16));
-        contenedor.add(etiquetaDeTitulo, BorderLayout.NORTH);
-        contenedor.add(componente, BorderLayout.CENTER);
+    private VBox envolverConTitulo(PanelTablero tablero, String titulo) {
+        VBox contenedor = new VBox(5);
+        contenedor.setAlignment(Pos.CENTER);
+        Label etiquetaTitulo = new Label(titulo);
+        etiquetaTitulo.setTextFill(Color.WHITE);
+        etiquetaTitulo.setFont(Font.font("SansSerif", FontWeight.BOLD, 16));
+
+        contenedor.getChildren().addAll(etiquetaTitulo, tablero);
+        VBox.setVgrow(tablero, javafx.scene.layout.Priority.ALWAYS);
         return contenedor;
     }
 
@@ -219,14 +204,9 @@ public class PanelJuego extends PanelBase {
             etiquetaDeColocacion.setText("Flota completa. Pulsa \"Comenzar batalla\".");
             return;
         }
-        String textoDeOrientacion;
-        if (orientacionHorizontal) {
-            textoDeOrientacion = "Horizontal";
-        } else {
-            textoDeOrientacion = "Vertical";
-        }
+        String textoOrientacion = orientacionHorizontal ? "Horizontal" : "Vertical";
         etiquetaDeColocacion.setText("Coloca: " + LogicaBarcos.NOMBRES_BARCOS[indiceBarcoPendiente]
-                + " (" + LogicaBarcos.LONGITUDES_BARCOS[indiceBarcoPendiente] + " casillas) - " + textoDeOrientacion);
+                + " (" + LogicaBarcos.LONGITUDES_BARCOS[indiceBarcoPendiente] + " casillas) - " + textoOrientacion);
     }
 
     private void alSeleccionarCasillaDeColocacion(int fila, int columna) {
@@ -244,30 +224,27 @@ public class PanelJuego extends PanelBase {
             actualizarTablerosDeColocacion();
             actualizarTextoDeColocacion();
             if (indiceBarcoPendiente >= LogicaBarcos.LONGITUDES_BARCOS.length) {
-                botonComenzarBatalla.setEnabled(true);
+                botonComenzarBatalla.setDisable(false);
             }
         } else {
-            etiquetaDeColocacion.setText("Posición inválida: el barco se sale del tablero o se encima con otro. Intenta otra casilla.");
+            etiquetaDeColocacion.setText("Posición inválida: el barco se sale del tablero o se encima con otro.");
         }
     }
 
     private void iniciarBatalla() {
         faseActual = FASE_BATALLA;
-        botonComenzarBatalla.setEnabled(false);
+        botonComenzarBatalla.setDisable(true);
         panelDeColocacion.setInteractivo(false);
 
         panelDeColocacion.actualizar(logicaJugador.copiarTableroPropio(), logicaJugador.getBarcosPropios());
         panelDeFlotaPropia.actualizar(logicaJugador.copiarTableroPropio(), logicaJugador.getBarcosPropios());
-        panelDeTableroEnemigo.actualizar(logicaJugador.copiarTableroDeTiro(), new ArrayList<LogicaBarcos.Barco>());
+        panelDeTableroEnemigo.actualizar(logicaJugador.copiarTableroDeTiro(), new ArrayList<>());
 
         etiquetaDeEstado.setText("Esperando al servidor...");
-        administradorDePantallas.show(panelCentral, PANTALLA_BATALLA);
+        vistaDeColocacion.setVisible(false);
+        vistaDeBatalla.setVisible(true);
 
-        hiloDeRed = new Thread(new Runnable() {
-            public void run() {
-                ejecutarPartida();
-            }
-        });
+        hiloDeRed = new Thread(this::ejecutarPartida);
         hiloDeRed.setDaemon(true);
         hiloDeRed.start();
     }
@@ -315,13 +292,13 @@ public class PanelJuego extends PanelBase {
                     || LogicaBarcos.RESULTADO_TOCADO.equals(resultado)
                     || LogicaBarcos.RESULTADO_HUNDIDO.equals(resultado);
             if (!resultadoValido) {
-                throw new IOException("El servidor respondio con un resultado invalido: " + resultado);
+                throw new IOException("El servidor respondió con un resultado inválido: " + resultado);
             }
 
             logicaJugador.registrarResultadoDisparo(filaDisparada, columnaDisparada, resultado);
             if (LogicaBarcos.RESULTADO_HUNDIDO.equals(resultado)) {
                 if (!mensajeResultado.tieneBarcoHundido()) {
-                    throw new IOException("El servidor no indico cual barco se hundio");
+                    throw new IOException("El servidor no indicó cuál barco se hundió");
                 }
                 logicaJugador.registrarBarcoEnemigoHundido(mensajeResultado.obtenerBarcoHundido());
             }
@@ -384,10 +361,7 @@ public class PanelJuego extends PanelBase {
             boolean elTurnoContinua = !servidorFalloElDisparo && !partidaTerminada
                     && disparosRecibidos < LogicaBarcos.DISPAROS_POR_TURNO;
 
-            String nombreBarcoPropioHundido = null;
-            if (barcoPropioHundido != null) {
-                nombreBarcoPropioHundido = barcoPropioHundido.getNombre();
-            }
+            String nombreBarcoPropioHundido = (barcoPropioHundido != null) ? barcoPropioHundido.getNombre() : null;
 
             char[][] copiaDelTableroPropio = logicaJugador.copiarTableroPropio();
             String textoDeResultado = construirTextoDelDisparoDelServidor(filaRecibida, columnaRecibida, resultado,
@@ -409,19 +383,14 @@ public class PanelJuego extends PanelBase {
         if (partidaTerminada) {
             return "¡Hundiste el " + nombreBarcoHundido + "! Toda la flota enemiga está hundida.";
         }
-        String textoDelSiguienteTurno;
-        if (elTurnoContinua) {
-            textoDelSiguienteTurno = " Sigues disparando.";
-        } else {
-            textoDelSiguienteTurno = " Turno del servidor.";
-        }
+        String textoSiguiente = elTurnoContinua ? " Sigues disparando." : " Turno del servidor.";
         if (LogicaBarcos.RESULTADO_AGUA.equals(resultado)) {
-            return "Fallaste en " + nombreDeCasilla + "." + textoDelSiguienteTurno;
+            return "Fallaste en " + nombreDeCasilla + "." + textoSiguiente;
         }
         if (LogicaBarcos.RESULTADO_TOCADO.equals(resultado)) {
-            return "¡Tocaste un barco en " + nombreDeCasilla + "!" + textoDelSiguienteTurno;
+            return "¡Tocaste un barco en " + nombreDeCasilla + "!" + textoSiguiente;
         }
-        return "¡Hundiste el " + nombreBarcoHundido + " enemigo!" + textoDelSiguienteTurno;
+        return "¡Hundiste el " + nombreBarcoHundido + " enemigo!" + textoSiguiente;
     }
 
     private String construirTextoDelDisparoDelServidor(int fila, int columna, String resultado, String nombreBarcoHundido,
@@ -430,54 +399,39 @@ public class PanelJuego extends PanelBase {
         if (partidaTerminada) {
             return "El servidor hundió tu " + nombreBarcoHundido + ". Toda tu flota está hundida.";
         }
-        String textoDelSiguienteTurno;
-        if (elTurnoContinua) {
-            textoDelSiguienteTurno = " Sigue disparando.";
-        } else {
-            textoDelSiguienteTurno = " Tu turno.";
-        }
+        String textoSiguiente = elTurnoContinua ? " Sigue disparando." : " Tu turno.";
         if (LogicaBarcos.RESULTADO_AGUA.equals(resultado)) {
-            return "El servidor falló en " + nombreDeCasilla + "." + textoDelSiguienteTurno;
+            return "El servidor falló en " + nombreDeCasilla + "." + textoSiguiente;
         }
         if (LogicaBarcos.RESULTADO_TOCADO.equals(resultado)) {
-            return "¡El servidor tocó uno de tus barcos en " + nombreDeCasilla + "!" + textoDelSiguienteTurno;
+            return "¡El servidor tocó uno de tus barcos en " + nombreDeCasilla + "!" + textoSiguiente;
         }
-        return "¡El servidor hundió tu " + nombreBarcoHundido + "!" + textoDelSiguienteTurno;
+        return "¡El servidor hundió tu " + nombreBarcoHundido + "!" + textoSiguiente;
     }
 
     private void habilitarTableroEnemigo(final String textoDeEstado) {
-        SwingUtilities.invokeLater(new Runnable() {
-            public void run() {
-                etiquetaDeEstado.setText(textoDeEstado);
-                panelDeTableroEnemigo.setInteractivo(true);
-            }
+        Platform.runLater(() -> {
+            etiquetaDeEstado.setText(textoDeEstado);
+            panelDeTableroEnemigo.setInteractivo(true);
         });
     }
 
     private void publicarEstado(final String textoDeEstado) {
-        SwingUtilities.invokeLater(new Runnable() {
-            public void run() {
-                etiquetaDeEstado.setText(textoDeEstado);
-            }
-        });
+        Platform.runLater(() -> etiquetaDeEstado.setText(textoDeEstado));
     }
 
     private void mostrarDisparoEnPantalla(final PanelTablero panel, final int fila, final int columna, final Color colorDelRadar,
                                           final String resultado, final char[][] copiaDelTablero,
                                           final List<LogicaBarcos.Barco> barcosAMostrar, final String textoDeEstado)
             throws InterruptedException {
-        SwingUtilities.invokeLater(new Runnable() {
-            public void run() {
-                panel.mostrarRadar(fila, columna, colorDelRadar, new Runnable() {
-                    public void run() {
-                        panel.actualizar(copiaDelTablero, barcosAMostrar);
-                        agregarEfectoYSonido(panel, fila, columna, resultado);
-                        etiquetaDeEstado.setText(textoDeEstado);
-                        semaforoDeAnimacion.release();
-                    }
-                });
-                Sonido.reproducir("radar");
-            }
+        Platform.runLater(() -> {
+            panel.mostrarRadar(fila, columna, colorDelRadar, () -> {
+                panel.actualizar(copiaDelTablero, barcosAMostrar);
+                agregarEfectoYSonido(panel, fila, columna, resultado);
+                etiquetaDeEstado.setText(textoDeEstado);
+                semaforoDeAnimacion.release();
+            });
+            Sonido.reproducir("radar");
         });
         semaforoDeAnimacion.acquire();
     }
@@ -514,57 +468,54 @@ public class PanelJuego extends PanelBase {
     }
 
     private void finalizarPartida(final boolean jugadorGano) throws InterruptedException {
-        SwingUtilities.invokeLater(new Runnable() {
-            public void run() {
-                faseActual = FASE_TERMINADA;
-                panelDeTableroEnemigo.setInteractivo(false);
-                if (jugadorGano) {
-                    Sonido.reproducir("victoria");
-                } else {
-                    Sonido.reproducir("derrota");
-                }
+        Platform.runLater(() -> {
+            faseActual = FASE_TERMINADA;
+            panelDeTableroEnemigo.setInteractivo(false);
+            if (jugadorGano) {
+                Sonido.reproducir("victoria");
+            } else {
+                Sonido.reproducir("derrota");
             }
         });
 
         Thread.sleep(PAUSA_ANTES_DEL_MENSAJE_FINAL_MILISEGUNDOS);
 
-        final String mensajeFinal;
-        if (jugadorGano) {
-            mensajeFinal = "¡Ganaste! Hundiste toda la flota del servidor.";
-        } else {
-            mensajeFinal = "Perdiste. El servidor hundió toda tu flota.";
-        }
+        final String mensajeFinal = jugadorGano
+                ? "¡Ganaste! Hundiste toda la flota del servidor."
+                : "Perdiste. El servidor hundió toda tu flota.";
 
-        SwingUtilities.invokeLater(new Runnable() {
-            public void run() {
-                if (partidaDetenida) {
-                    return;
-                }
-                JOptionPane.showMessageDialog(PanelJuego.this, mensajeFinal, "Fin de la partida", JOptionPane.INFORMATION_MESSAGE);
-                detener();
-                accionVolverAlMenu.run();
+        Platform.runLater(() -> {
+            if (partidaDetenida) {
+                return;
             }
+            Alert alerta = new Alert(Alert.AlertType.INFORMATION);
+            alerta.setTitle("Fin de la partida");
+            alerta.setHeaderText(null);
+            alerta.setContentText(mensajeFinal);
+            alerta.showAndWait();
+
+            detener();
+            accionVolverAlMenu.run();
         });
     }
 
     private void mostrarErrorDeConexion(final String detalleDelError) {
-        SwingUtilities.invokeLater(new Runnable() {
-            public void run() {
-                if (partidaDetenida) {
-                    return;
-                }
-                JOptionPane.showMessageDialog(PanelJuego.this,
-                        "Se perdió la conexión con el servidor.\n" + detalleDelError,
-                        "Error de red", JOptionPane.ERROR_MESSAGE);
-                detener();
-                accionVolverAlMenu.run();
+        Platform.runLater(() -> {
+            if (partidaDetenida) {
+                return;
             }
+            Alert alerta = new Alert(Alert.AlertType.ERROR);
+            alerta.setTitle("Error de red");
+            alerta.setHeaderText("Se perdió la conexión con el servidor.");
+            alerta.setContentText(detalleDelError);
+            alerta.showAndWait();
+
+            detener();
+            accionVolverAlMenu.run();
         });
     }
 
-    protected void dibujarContenido(Graphics2D graficos) {
-    }
-
+    @Override
     public void detener() {
         partidaDetenida = true;
         if (hiloDeRed != null) {

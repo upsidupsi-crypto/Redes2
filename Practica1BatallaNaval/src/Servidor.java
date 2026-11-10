@@ -5,106 +5,66 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.Random;
 
-public class Servidor implements Runnable {
+public class Servidor {
 
     private static final int PUERTO = 5000;
     private static final int TIEMPO_ESPERA_NOMBRE_MILISEGUNDOS = 10000;
 
-    private static boolean hayPartidaEnCurso = false;
-
-    private final Socket socketCliente;
-    private final Random generadorAleatorio;
+    private final Random generadorAleatorio = new Random();
+    private LogicaBarcos logicaServidor;
     private ObjectOutputStream flujoSalida;
     private ObjectInputStream flujoEntrada;
-    private LogicaBarcos logicaServidor;
     private String nombreJugador;
     private int filaDisparoServidor;
     private int columnaDisparoServidor;
 
-    public Servidor(Socket socketCliente) {
-        this.socketCliente = socketCliente;
-        this.generadorAleatorio = new Random();
-    }
-
     public static void main(String[] argumentos) {
-        ServerSocket socketServidor;
-        try {
-            socketServidor = new ServerSocket(PUERTO);
-        } catch (IOException excepcion) {
-            System.out.println("No se pudo abrir el puerto " + PUERTO + ": " + excepcion.getMessage());
-            return;
-        }
+        try (ServerSocket socketServidor = new ServerSocket(PUERTO)) {
+            System.out.println("Servidor de Batalla Naval listo (Modo Un Jugador) en el puerto " + PUERTO);
 
-        System.out.println("Servidor de Batalla Naval esperando jugadores en el puerto " + PUERTO);
-
-        while (true) {
-            try {
-                Socket socketNuevoCliente = socketServidor.accept();
-                Thread hiloDelCliente = new Thread(new Servidor(socketNuevoCliente));
-                hiloDelCliente.start();
-            } catch (IOException excepcion) {
-                System.out.println("Error al aceptar una conexion: " + excepcion.getMessage());
+            while (true) {
+                System.out.println("\nEsperando conexión del jugador...");
+                try (Socket socketCliente = socketServidor.accept()) {
+                    Servidor servidor = new Servidor();
+                    servidor.atenderCliente(socketCliente);
+                } catch (IOException e) {
+                    System.out.println("Error en la comunicación con el cliente: " + e.getMessage());
+                }
             }
+        } catch (IOException e) {
+            System.out.println("No se pudo iniciar el servidor en el puerto " + PUERTO + ": " + e.getMessage());
         }
     }
 
-    private static synchronized boolean reservarPartida() {
-        if (hayPartidaEnCurso) {
-            return false;
-        }
-        hayPartidaEnCurso = true;
-        return true;
-    }
-
-    private static synchronized void liberarPartida() {
-        hayPartidaEnCurso = false;
-    }
-
-    @Override
-    public void run() {
-        boolean partidaReservada = false;
+    private void atenderCliente(Socket socketCliente) {
         try {
             flujoSalida = new ObjectOutputStream(socketCliente.getOutputStream());
             flujoSalida.flush();
             flujoEntrada = new ObjectInputStream(socketCliente.getInputStream());
             socketCliente.setKeepAlive(true);
 
+            // Handshake inicial
             socketCliente.setSoTimeout(TIEMPO_ESPERA_NOMBRE_MILISEGUNDOS);
             Mensaje mensajeNombre = recibirMensajeDeTipo(Mensaje.TIPO_NOMBRE);
             socketCliente.setSoTimeout(0);
-
-            if (!reservarPartida()) {
-                enviar(new Mensaje(Mensaje.TIPO_OCUPADO));
-                System.out.println("Conexion rechazada: ya hay una partida en curso con otro jugador");
-                return;
-            }
-            partidaReservada = true;
-
             nombreJugador = mensajeNombre.getTexto();
-            System.out.println("Jugador conectado: " + nombreJugador);
+            System.out.println("¡Jugador conectado!: " + nombreJugador);
             enviar(new Mensaje(Mensaje.TIPO_INICIO));
 
             recibirMensajeDeTipo(Mensaje.TIPO_LISTO);
-            System.out.println(nombreJugador + " ya coloco su flota");
+            System.out.println(nombreJugador + " ha colocado su flota.");
 
             logicaServidor = new LogicaBarcos();
             logicaServidor.colocarFlotaAleatoria();
 
             jugarPartida();
-        } catch (IOException excepcion) {
-            System.out.println("Se interrumpio la comunicacion con el cliente: " + excepcion.getMessage());
-        } catch (ClassNotFoundException excepcion) {
-            System.out.println("El cliente envio datos desconocidos: " + excepcion.getMessage());
+
+        } catch (IOException e) {
+            System.out.println("Conexión finalizada o interrumpida: " + e.getMessage());
+        } catch (ClassNotFoundException e) {
+            System.out.println("Error al deserializar el mensaje recibido: " + e.getMessage());
         } finally {
-            if (partidaReservada) {
-                liberarPartida();
-                System.out.println("Partida terminada. Esperando nuevos jugadores...");
-            }
-            try {
-                socketCliente.close();
-            } catch (IOException excepcion) {
-                System.out.println("No se pudo cerrar la conexion: " + excepcion.getMessage());
-            }
+            System.out.println("Partida finalizada. Esperando nueva conexión...");
         }
     }
 
@@ -117,11 +77,11 @@ public class Servidor implements Runnable {
     private Mensaje recibirMensajeDeTipo(String tipoEsperado) throws IOException, ClassNotFoundException {
         Object objetoRecibido = flujoEntrada.readObject();
         if (!(objetoRecibido instanceof Mensaje)) {
-            throw new IOException("Se recibio un objeto que no es un Mensaje");
+            throw new IOException("Se recibió un objeto que no es de tipo Mensaje");
         }
         Mensaje mensajeRecibido = (Mensaje) objetoRecibido;
         if (!tipoEsperado.equals(mensajeRecibido.getTipo())) {
-            throw new IOException("Se esperaba un mensaje " + tipoEsperado + " y llego " + mensajeRecibido.getTipo());
+            throw new IOException("Se esperaba un mensaje de tipo " + tipoEsperado + " y se recibió " + mensajeRecibido.getTipo());
         }
         return mensajeRecibido;
     }
@@ -132,10 +92,10 @@ public class Servidor implements Runnable {
         Mensaje mensajeTurno = new Mensaje(Mensaje.TIPO_TURNO);
         if (turnoDelCliente) {
             mensajeTurno.setTexto(Mensaje.TURNO_CLIENTE);
-            System.out.println("Empieza disparando " + nombreJugador);
+            System.out.println("Inicia disparando el jugador: " + nombreJugador);
         } else {
             mensajeTurno.setTexto(Mensaje.TURNO_SERVIDOR);
-            System.out.println("Empieza disparando el servidor");
+            System.out.println("Inicia disparando el servidor.");
         }
         enviar(mensajeTurno);
 
@@ -177,7 +137,7 @@ public class Servidor implements Runnable {
             }
             enviar(mensajeResultado);
 
-            System.out.println(nombreJugador + " disparo a " + LogicaBarcos.nombreDeCasilla(fila, columna) + ": " + resultado);
+            System.out.println(nombreJugador + " disparó a " + LogicaBarcos.nombreDeCasilla(fila, columna) + ": " + resultado);
             disparosValidos++;
 
             if (LogicaBarcos.RESULTADO_AGUA.equals(resultado)) {
@@ -185,7 +145,7 @@ public class Servidor implements Runnable {
             }
             if (servidorPerdio) {
                 partidaTerminada = true;
-                System.out.println("Gano " + nombreJugador + ": hundio toda la flota del servidor");
+                System.out.println("¡Ganó " + nombreJugador + "! Hundió toda la flota del servidor.");
             }
         }
         return partidaTerminada;
@@ -211,18 +171,18 @@ public class Servidor implements Runnable {
                     || LogicaBarcos.RESULTADO_TOCADO.equals(resultado)
                     || LogicaBarcos.RESULTADO_HUNDIDO.equals(resultado);
             if (!resultadoValido) {
-                throw new IOException("El cliente respondio con un resultado invalido: " + resultado);
+                throw new IOException("El cliente respondió con un resultado inválido: " + resultado);
             }
 
             logicaServidor.registrarResultadoDisparo(filaDisparoServidor, columnaDisparoServidor, resultado);
             if (LogicaBarcos.RESULTADO_HUNDIDO.equals(resultado)) {
                 if (!mensajeResultado.tieneBarcoHundido()) {
-                    throw new IOException("El cliente no indico cual barco se hundio");
+                    throw new IOException("El cliente no indicó cuál barco se hundió.");
                 }
                 logicaServidor.registrarBarcoEnemigoHundido(mensajeResultado.obtenerBarcoHundido());
             }
 
-            System.out.println("El servidor disparo a " + LogicaBarcos.nombreDeCasilla(filaDisparoServidor, columnaDisparoServidor) + ": " + resultado);
+            System.out.println("El servidor disparó a " + LogicaBarcos.nombreDeCasilla(filaDisparoServidor, columnaDisparoServidor) + ": " + resultado);
             disparosRealizados++;
 
             if (LogicaBarcos.RESULTADO_AGUA.equals(resultado)) {
@@ -230,7 +190,7 @@ public class Servidor implements Runnable {
             }
             if (mensajeResultado.isFinDeJuego()) {
                 partidaTerminada = true;
-                System.out.println("Gano el servidor: hundio toda la flota de " + nombreJugador);
+                System.out.println("¡Ganó el servidor! Hundió toda la flota de " + nombreJugador + ".");
             }
         }
         return partidaTerminada;
