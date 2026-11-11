@@ -1,5 +1,3 @@
-package com.redes.practica2.protocolo;
-
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.DatagramPacket;

@@ -1,11 +1,3 @@
-package com.redes.practica2.servidor;
-
-import com.redes.practica2.metadatos.AnalizadorID3;
-import com.redes.practica2.metadatos.MetadatosCancion;
-import com.redes.practica2.protocolo.EmisorGoBackN;
-import com.redes.practica2.protocolo.TipoPaquete;
-import com.redes.practica2.protocolo.Trama;
-
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.ObjectOutputStream;
@@ -46,7 +38,9 @@ public class ServidorMultimedia {
 
     public static void main(String[] argumentos) {
         try {
-            Path carpeta = Paths.get(argumentos.length > 0 ? argumentos[0] : "music");
+            String rutaPorDefecto = "C:/Users/josue/Documents/Redes2p/practica2-control-flujo/music";
+
+            Path carpeta = Paths.get(argumentos.length > 0 ? argumentos[0] : rutaPorDefecto);
             int tamanoVentana = argumentos.length > 1 ? Integer.parseInt(argumentos[1]) : TAMANO_VENTANA_PREDETERMINADO;
             long timeoutMs = argumentos.length > 2 ? Long.parseLong(argumentos[2]) : TIMEOUT_PREDETERMINADO_MS;
             double probabilidadPerdida = argumentos.length > 3 ? Double.parseDouble(argumentos[3]) : 0.0;
@@ -55,6 +49,7 @@ public class ServidorMultimedia {
             List<MetadatosCancion> canciones = new AnalizadorID3().analizarDirectorio(carpeta);
             CatalogoCanciones catalogo = new CatalogoCanciones(canciones);
             System.out.println("Canciones indexadas: " + catalogo.tamano());
+            System.out.println("Carpeta de origen: " + carpeta.toAbsolutePath());
             System.out.println("Ventana N=" + tamanoVentana + ", timeout=" + timeoutMs + " ms, pérdida simulada="
                     + probabilidadPerdida + ", puerto=" + puerto);
             new ServidorMultimedia(puerto, catalogo, tamanoVentana, timeoutMs, probabilidadPerdida).iniciar();

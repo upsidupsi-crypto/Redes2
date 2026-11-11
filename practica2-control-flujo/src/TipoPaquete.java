@@ -1,5 +1,3 @@
-package com.redes.practica2.protocolo;
-
 public enum TipoPaquete {
     SOLICITUD_CATALOGO((byte) 0x01),
     RESPUESTA_CATALOGO((byte) 0x02),
@@ -20,11 +18,11 @@ public enum TipoPaquete {
     }
 
     public static TipoPaquete desdeCodigo(byte codigo) {
-        for (TipoPaquete tipoPaquete : values()) {
-            if (tipoPaquete.codigo == codigo) {
-                return tipoPaquete;
+        for (TipoPaquete tipo : values()) {
+            if (tipo.codigo == codigo) {
+                return tipo;
             }
         }
-        throw new IllegalArgumentException("Tipo de trama desconocido: " + codigo);
+        return null;
     }
 }

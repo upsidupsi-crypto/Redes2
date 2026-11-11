@@ -1,5 +1,3 @@
-package com.redes.practica2.protocolo;
-
 import java.nio.ByteBuffer;
 
 public class Trama {

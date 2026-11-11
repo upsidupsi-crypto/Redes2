@@ -1,5 +1,3 @@
-package com.redes.practica2.multimedia;
-
 import javazoom.jl.decoder.JavaLayerException;
 import javazoom.jl.player.Player;
 

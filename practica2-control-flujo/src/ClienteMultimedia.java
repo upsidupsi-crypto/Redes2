@@ -1,10 +1,3 @@
-package com.redes.practica2.cliente;
-
-import com.redes.practica2.metadatos.MetadatosCancion;
-import com.redes.practica2.protocolo.ReceptorGoBackN;
-import com.redes.practica2.protocolo.TipoPaquete;
-import com.redes.practica2.protocolo.Trama;
-
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;

@@ -1,5 +1,3 @@
-package com.redes.practica2.metadatos;
-
 import java.io.Serializable;
 import java.nio.file.Path;
 
