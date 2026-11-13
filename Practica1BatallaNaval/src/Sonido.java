@@ -7,11 +7,33 @@ import java.util.Map;
 
 public class Sonido {
 
-    private static final String CARPETA_SONIDOS = "sonidos/";
+    private static final String CARPETA_SONIDOS = resolverCarpetaSonidos();
     private static final Map<String, Clip> clipsCargados = new HashMap<String, Clip>();
     private static boolean sonidoActivado = true;
 
     private Sonido() {
+    }
+
+    private static String resolverCarpetaSonidos() {
+        File relativa = new File("sonidos");
+        if (relativa.isDirectory()) {
+            return relativa.getPath() + File.separator;
+        }
+        try {
+            File ubicacion = new File(Sonido.class.getProtectionDomain()
+                    .getCodeSource().getLocation().toURI());
+            File directorio = ubicacion;
+            while (directorio != null) {
+                File candidata = new File(directorio, "sonidos");
+                if (candidata.isDirectory()) {
+                    return candidata.getPath() + File.separator;
+                }
+                directorio = directorio.getParentFile();
+            }
+        } catch (Exception excepcion) {
+            System.out.println("No se pudo localizar la carpeta de sonidos: " + excepcion.getMessage());
+        }
+        return "sonidos" + File.separator;
     }
 
     public static void precargar(String[] nombresDeSonidos) {

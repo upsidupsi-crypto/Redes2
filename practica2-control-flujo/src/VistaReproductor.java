@@ -15,6 +15,8 @@ import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
 import javafx.scene.control.Slider;
 import javafx.scene.control.TextField;
+import javafx.scene.image.Image;
+import javafx.scene.image.ImageView;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -24,14 +26,17 @@ import javafx.scene.paint.Color;
 import javafx.scene.paint.CycleMethod;
 import javafx.scene.paint.LinearGradient;
 import javafx.scene.paint.Stop;
+import javafx.scene.shape.Rectangle;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
 import javafx.stage.Stage;
 import javafx.util.Duration;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
 import java.util.stream.Collectors;
@@ -48,6 +53,13 @@ public class VistaReproductor extends Application {
     private Label lblEstado;
     private Label lblTitulo, lblArtista, lblAlbum, lblGenero, lblAnio, lblDuracion;
     private Button btnPlayPause, btnStop, btnConectar;
+
+    // Barra de reproducción estilo Spotify
+    private static final double TAMANO_CARATULA = 56;
+    private StackPane cajaCaratula;
+    private ImageView imgCaratula;
+    private Label lblCaratulaVacia;
+    private Label lblBarraTitulo, lblBarraArtista;
 
     // Barra de tiempo
     private Slider sliderTiempo;
@@ -232,7 +244,7 @@ public class VistaReproductor extends Application {
 
         // Controles principales: Botón único Play/Pausa estilo Spotify + Detener
         HBox controles = new HBox(15);
-        controles.setAlignment(Pos.CENTER);
+        controles.setAlignment(Pos.CENTER_RIGHT);
 
         btnPlayPause = new Button("▶  Play");
         btnPlayPause.setStyle(estiloBotonWii("#00C6FF", "#0072FF", "#FFFFFF"));
@@ -243,8 +255,71 @@ public class VistaReproductor extends Application {
         btnStop.setOnAction(e -> detenerReproduccion());
 
         controles.getChildren().addAll(btnPlayPause, btnStop);
-        contenedor.getChildren().addAll(lblEstado, cajaBarraTiempo, controles);
+
+        // Barra de reproducción estilo Spotify: carátula + título/artista + controles
+        cajaCaratula = new StackPane();
+        cajaCaratula.setPrefSize(TAMANO_CARATULA, TAMANO_CARATULA);
+        cajaCaratula.setMinSize(TAMANO_CARATULA, TAMANO_CARATULA);
+        cajaCaratula.setMaxSize(TAMANO_CARATULA, TAMANO_CARATULA);
+        cajaCaratula.setStyle("-fx-background-color: linear-gradient(to bottom right, #00C6FF, #0072FF); "
+                + "-fx-background-radius: 10; -fx-effect: dropshadow(three-pass-box, rgba(0,0,0,0.18), 8, 0, 0, 3);");
+
+        lblCaratulaVacia = new Label("♪");
+        lblCaratulaVacia.setFont(Font.font("Segoe UI", FontWeight.BOLD, 24));
+        lblCaratulaVacia.setTextFill(Color.WHITE);
+
+        imgCaratula = new ImageView();
+        imgCaratula.setFitWidth(TAMANO_CARATULA);
+        imgCaratula.setFitHeight(TAMANO_CARATULA);
+        imgCaratula.setPreserveRatio(false);
+        imgCaratula.setSmooth(true);
+        imgCaratula.setVisible(false);
+        Rectangle recorteCaratula = new Rectangle(TAMANO_CARATULA, TAMANO_CARATULA);
+        recorteCaratula.setArcWidth(20);
+        recorteCaratula.setArcHeight(20);
+        imgCaratula.setClip(recorteCaratula);
+
+        cajaCaratula.getChildren().addAll(lblCaratulaVacia, imgCaratula);
+
+        VBox cajaInfoCancion = new VBox(2);
+        cajaInfoCancion.setMaxWidth(430);
+        lblBarraTitulo = new Label("Sin reproducción");
+        lblBarraTitulo.setFont(Font.font("Segoe UI", FontWeight.BOLD, 15));
+        lblBarraTitulo.setTextFill(Color.web("#1E293B"));
+        lblBarraArtista = new Label("—");
+        lblBarraArtista.setFont(Font.font("Segoe UI", 12));
+        lblBarraArtista.setTextFill(Color.web("#64748B"));
+        cajaInfoCancion.getChildren().addAll(lblBarraTitulo, lblBarraArtista);
+        HBox.setHgrow(cajaInfoCancion, Priority.ALWAYS);
+
+        HBox barraReproduccion = new HBox(16);
+        barraReproduccion.setAlignment(Pos.CENTER_LEFT);
+        barraReproduccion.setPadding(new Insets(12, 18, 12, 18));
+        barraReproduccion.setStyle("-fx-background-color: rgba(255, 255, 255, 0.92); " +
+                "-fx-background-radius: 16; -fx-border-radius: 16; " +
+                "-fx-border-color: #E2E8F0; -fx-border-width: 1.5; " +
+                "-fx-effect: dropshadow(three-pass-box, rgba(0,0,0,0.08), 12, 0, 0, 4);");
+        barraReproduccion.getChildren().addAll(cajaCaratula, cajaInfoCancion, controles);
+
+        contenedor.getChildren().addAll(lblEstado, cajaBarraTiempo, barraReproduccion);
         return contenedor;
+    }
+
+    private void mostrarCaratula(MetadatosCancion cancion) {
+        byte[] datos = cancion == null ? null : cancion.obtenerCaratula();
+        boolean hayCaratula = datos != null && datos.length > 0;
+        if (hayCaratula) {
+            try {
+                imgCaratula.setImage(new Image(new ByteArrayInputStream(datos)));
+            } catch (IllegalArgumentException formatoInvalido) {
+                hayCaratula = false;
+                imgCaratula.setImage(null);
+            }
+        } else {
+            imgCaratula.setImage(null);
+        }
+        imgCaratula.setVisible(hayCaratula);
+        lblCaratulaVacia.setVisible(!hayCaratula);
     }
 
     private Label crearEtiquetaTexto(String texto) {
@@ -288,6 +363,7 @@ public class VistaReproductor extends Application {
                 try {
                     cliente = new ClienteMultimedia(host, puerto, 0.0);
                     listaCompletaCanciones = cliente.solicitarCatalogo();
+                    listaCompletaCanciones.sort(comparadorPorAlbum());
 
                     Platform.runLater(() -> {
                         listaCanciones.getItems().setAll(listaCompletaCanciones);
@@ -308,6 +384,14 @@ public class VistaReproductor extends Application {
         }
     }
 
+    private Comparator<MetadatosCancion> comparadorPorAlbum() {
+        Comparator<String> porTexto = String.CASE_INSENSITIVE_ORDER;
+        return Comparator
+                .comparing(MetadatosCancion::obtenerAlbum, porTexto)
+                .thenComparingInt(MetadatosCancion::obtenerNumeroPista)
+                .thenComparing(MetadatosCancion::obtenerTitulo, porTexto);
+    }
+
     private void filtrarCanciones(String texto) {
         if (listaCompletaCanciones == null || listaCompletaCanciones.isEmpty()) return;
         if (texto == null || texto.isBlank()) {
@@ -319,7 +403,8 @@ public class VistaReproductor extends Application {
         List<MetadatosCancion> filtradas = listaCompletaCanciones.stream()
                 .filter(c -> c.obtenerTitulo().toLowerCase().contains(consulta)
                         || c.obtenerArtista().toLowerCase().contains(consulta)
-                        || c.obtenerGenero().toLowerCase().contains(consulta))
+                        || c.obtenerGenero().toLowerCase().contains(consulta)
+                        || c.obtenerAlbum().toLowerCase().contains(consulta))
                 .collect(Collectors.toList());
 
         listaCanciones.getItems().setAll(filtradas);
@@ -358,6 +443,10 @@ public class VistaReproductor extends Application {
         duracionTotal = seleccionada.obtenerDuracionSegundos();
         segundosTranscurridos = 0;
 
+        lblBarraTitulo.setText(seleccionada.obtenerTitulo());
+        lblBarraArtista.setText(seleccionada.obtenerArtista() + "  ·  " + seleccionada.obtenerAlbum());
+        mostrarCaratula(seleccionada);
+
         sliderTiempo.setMin(0);
         sliderTiempo.setMax(duracionTotal > 0 ? duracionTotal : 100);
         sliderTiempo.setValue(0);
@@ -393,13 +482,22 @@ public class VistaReproductor extends Application {
     }
 
     private void actualizarPanelMetadatos(MetadatosCancion m) {
-        if (m == null) return;
+        if (m == null) {
+            lblBarraTitulo.setText("Sin reproducción");
+            lblBarraArtista.setText("—");
+            mostrarCaratula(null);
+            return;
+        }
         lblTitulo.setText("Título: " + m.obtenerTitulo());
         lblArtista.setText("Artista: " + m.obtenerArtista());
         lblAlbum.setText("Álbum: " + m.obtenerAlbum());
         lblGenero.setText("Género: " + m.obtenerGenero());
         lblAnio.setText("Año: " + m.obtenerAnio());
         lblDuracion.setText("Duración: " + m.obtenerDuracionFormateada());
+
+        lblBarraTitulo.setText(m.obtenerTitulo());
+        lblBarraArtista.setText(m.obtenerArtista() + "  ·  " + m.obtenerAlbum());
+        mostrarCaratula(m);
     }
 
     private void iniciarContadorTiempo() {

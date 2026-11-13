@@ -38,7 +38,7 @@ public class ServidorMultimedia {
 
     public static void main(String[] argumentos) {
         try {
-            String rutaPorDefecto = "C:/Users/josue/Documents/Redes2p/practica2-control-flujo/music";
+            String rutaPorDefecto = "practica2-control-flujo/music";
 
             Path carpeta = Paths.get(argumentos.length > 0 ? argumentos[0] : rutaPorDefecto);
             int tamanoVentana = argumentos.length > 1 ? Integer.parseInt(argumentos[1]) : TAMANO_VENTANA_PREDETERMINADO;
